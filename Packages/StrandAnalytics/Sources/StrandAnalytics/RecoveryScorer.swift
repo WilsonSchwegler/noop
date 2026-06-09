@@ -14,6 +14,8 @@ import WhoopProtocol
 //   lower resting HR vs baseline → higher recovery  (W_RHR   = 0.20)
 //   lower resp vs baseline       → higher recovery  (W_RESP  = 0.05)
 //   higher sleep performance     → higher recovery  (W_SLEEP = 0.15)
+//   supported recent load        → higher recovery  (W_LOAD  = 0.10 when present)
+//   illness-like vital deviation → lower recovery   (W_ILL   = 0.10 when present)
 //
 // Each metric is standardized to a robust z-score against the personal baseline
 // (mean + EWMA-abs-dev spread). Missing terms are dropped and the weights
@@ -32,6 +34,8 @@ public enum RecoveryScorer {
     public static let wRHR: Double = 0.20
     public static let wResp: Double = 0.05
     public static let wSleep: Double = 0.15
+    public static let wLoad: Double = 0.10
+    public static let wIllness: Double = 0.10
 
     /// Logistic spread: ±2 z-units ≈ full Red–Green band (15%–95%).
     public static let logisticK: Double = 1.6
@@ -51,6 +55,16 @@ public enum RecoveryScorer {
 
     /// Rolling-mean HR window (seconds) for the resting-HR estimate.
     public static let restingHRWindowS: Int = 5 * 60
+
+    /// Training-load readiness term from acute:chronic workload ratio literature.
+    /// Ratios around 0.8...1.3 are treated as supported/adaptive load, while
+    /// spikes above ~1.3 increasingly suppress recovery readiness.
+    public static func loadZ(acuteChronicRatio: Double?) -> Double? {
+        guard let ratio = acuteChronicRatio, ratio.isFinite, ratio > 0 else { return nil }
+        if ratio < 0.8 { return max(-0.5, (ratio - 0.8) / 0.4) }
+        if ratio <= 1.3 { return 0.25 }
+        return max(-3.0, -((ratio - 1.3) / 0.20))
+    }
 
     // MARK: - Resting HR
 
@@ -133,6 +147,8 @@ public enum RecoveryScorer {
                                 rhrBaseline: DriverBaseline?,
                                 respBaseline: DriverBaseline?,
                                 sleepPerf: Double?,
+                                acuteChronicLoadRatio: Double? = nil,
+                                illnessPenaltyZ: Double? = nil,
                                 hrvBaselineUsable: Bool = true) -> Double? {
         // Cold-start gate: HRV is the dominant driver; if its baseline isn't
         // usable, refuse to score (more honest than a fabricated value).
@@ -156,6 +172,12 @@ public enum RecoveryScorer {
         if let sp = sleepPerf {
             terms.append(((sp - sleepPerfCenter) / sleepPerfScale, wSleep))
         }
+        if let load = loadZ(acuteChronicRatio: acuteChronicLoadRatio) {
+            terms.append((load, wLoad))
+        }
+        if let penalty = illnessPenaltyZ, penalty.isFinite, penalty > 0 {
+            terms.append((-min(3.0, penalty), wIllness))
+        }
 
         guard !terms.isEmpty else { return nil }
         let totalWeight = terms.reduce(0) { $0 + $1.w }
@@ -174,7 +196,9 @@ public enum RecoveryScorer {
                                 hrvBaseline: BaselineState,
                                 rhrBaseline: BaselineState?,
                                 respBaseline: BaselineState?,
-                                sleepPerf: Double?) -> Double? {
+                                sleepPerf: Double?,
+                                acuteChronicLoadRatio: Double? = nil,
+                                illnessPenaltyZ: Double? = nil) -> Double? {
         recovery(hrv: hrv,
                  rhr: rhr,
                  resp: resp,
@@ -182,6 +206,8 @@ public enum RecoveryScorer {
                  rhrBaseline: rhrBaseline.map(DriverBaseline.init),
                  respBaseline: respBaseline.map(DriverBaseline.init),
                  sleepPerf: sleepPerf,
+                 acuteChronicLoadRatio: acuteChronicLoadRatio,
+                 illnessPenaltyZ: illnessPenaltyZ,
                  hrvBaselineUsable: hrvBaseline.usable)
     }
 }
