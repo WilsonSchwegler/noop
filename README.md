@@ -1,34 +1,34 @@
 # NOOP
 
-NOOP is a local-first iPhone app for a WHOOP 4.0 strap. It connects directly to
-the strap over Bluetooth, stores the data on the phone, and builds a WHOOP-style
+NOOP is a local-first iPhone app for a WHO*P 4.0 strap. It connects directly to
+the strap over Bluetooth, stores the data on the phone, and builds a WHO*P-style
 dashboard around live heart rate, sleep, recovery, strain, workouts, steps, and a
 haptic wake alarm.
 
 The app is meant for direct Xcode installs while it is being developed. It is not
-on the App Store and does not require a WHOOP cloud account.
+on the App Store and does not require a WHO*P cloud account.
 
 > NOOP is an independent project. It is not affiliated with, endorsed by, or
-> connected to WHOOP, Inc. It is also not a medical device. Recovery, strain,
+> connected to WHO*P, Inc. It is also not a medical device. Recovery, strain,
 > sleep stages, SpO2-derived values, skin-temperature values, and illness hints
 > are research-grounded estimates from consumer hardware, not clinical results.
 
 ## What NOOP Does
 
-- Connects to a WHOOP 4.0 over Bluetooth.
+- Connects to a WHO*P 4.0 over Bluetooth.
 - Streams live heart rate and R-R interval data.
-- Offloads historical WHOOP sensor data into a local SQLite store.
+- Offloads historical WHO*P sensor data into a local SQLite store.
 - Displays a full-screen iPhone dashboard with Today, Workouts, Status, and More.
-- Calculates recovery locally from WHOOP sleep, HRV, resting HR, respiratory
+- Calculates recovery locally from WHO*P sleep, HRV, resting HR, respiratory
   rate, recent load, and optional raw SpO2 / skin-temperature signals.
 - Calculates strain from awake heart-rate load using TRIMP-style training load.
 - Shows recovery-adjusted load as a separate interpretation of strain.
-- Detects and plots sleep from WHOOP HR, R-R, respiration, and motion data.
+- Detects and plots sleep from WHO*P HR, R-R, respiration, and motion data.
 - Records workouts with HR graphs, strain, notes, and workout-specific fields.
 - Records run and hike routes only while those workouts are active.
 - Supports workout plans for strength training and swimming.
-- Shows steps from WHOOP-derived step data when available, otherwise estimated
-  from WHOOP motion.
+- Shows steps from WHO*P-derived step data when available, otherwise estimated
+  from WHO*P motion.
 - Sends haptic buzz commands and can arm the strap alarm.
 
 ## Main Screens
@@ -86,7 +86,7 @@ The Status tab is the live device page.
 
 ### Sleep
 
-Sleep is derived locally from WHOOP data. NOOP detects the main overnight sleep
+Sleep is derived locally from WHO*P data. NOOP detects the main overnight sleep
 window, stages it approximately, and displays:
 
 - Total sleep time
@@ -99,13 +99,13 @@ window, stages it approximately, and displays:
 
 The app no longer depends on Apple Health to calculate recovery. Apple Health
 read/export helper code may still exist in the repository, but the active app
-flow is WHOOP/local-first.
+flow is WHO*P/local-first.
 
 ## How Metrics Are Calculated
 
 ### Recovery
 
-Recovery is a 0-100 local NOOP score. It is not WHOOP's proprietary score.
+Recovery is a 0-100 local NOOP score.
 
 The current implementation uses:
 
@@ -123,7 +123,7 @@ provisional recovery score.
 
 ### Strain
 
-Strain is a 0-21 cardiovascular load estimate from WHOOP heart-rate data.
+Strain is a 0-21 cardiovascular load estimate from WHO*P heart-rate data.
 
 The app:
 
@@ -150,7 +150,7 @@ and red recovery make the same raw strain show as a higher adjusted load.
 
 ### Sleep
 
-Sleep detection uses WHOOP heart rate, R-R intervals, respiration, and motion.
+Sleep detection uses WHO*P heart rate, R-R intervals, respiration, and motion.
 The app tries to select the main overnight sleep block for the selected day so
 evening stillness does not replace the real sleep session.
 
@@ -161,8 +161,8 @@ they should not be treated as clinical sleep staging.
 
 NOOP is designed to run locally.
 
-- WHOOP data is stored on the phone in SQLite.
-- The app does not require a WHOOP account.
+- WHO*P data is stored on the phone in SQLite.
+- The app does not require a WHO*P account.
 - The app does not upload biometric data to a NOOP server.
 - Apple Health is not required for the current recovery/strain/sleep flow.
 - Location starts only for run and hike workouts and is used for route logging.
@@ -175,7 +175,7 @@ Requirements:
 
 - macOS with Xcode installed
 - An iPhone, tested during development with iPhone 15
-- A WHOOP 4.0 strap
+- A WHO*P 4.0 strap
 - A free or paid Apple Developer account signed into Xcode
 
 Steps:
@@ -186,7 +186,7 @@ Steps:
 4. In Signing & Capabilities, choose your development team.
 5. Press Run.
 6. On the iPhone, allow Bluetooth permissions.
-7. Keep the official WHOOP app closed while pairing if the strap is not showing
+7. Keep the official WHO*P app closed while pairing if the strap is not showing
    up in NOOP.
 
 If Xcode says the app requires a development team, select your Apple ID team in
@@ -197,15 +197,15 @@ Signing & Capabilities for the `NOOPiOS` target.
 ```text
 StrandiOS/
   App/                 SwiftUI iPhone app screens and navigation
-  BLE/                 WHOOP scan/connect/live BLE handling
+  BLE/                 WHO*P scan/connect/live BLE handling
   Collect/             Historical offload and local collection
   Data/                iOS metric snapshots, workout recorder, strain helper
   Health/              HealthKit helper code
   Resources/           Info.plist, assets, app icon
 
 Packages/
-  WhoopProtocol/       WHOOP frame parsing, commands, CRC, protocol types
-  WhoopStore/          Local SQLite persistence via GRDB
+  Who*pProtocol/       WHO*P frame parsing, commands, CRC, protocol types
+  Who*pStore/          Local SQLite persistence via GRDB
   StrandAnalytics/     HRV, recovery, strain, sleep, workouts, readiness math
   StrandDesign/        Shared colors, charts, and SwiftUI components
   StrandImport/        Import helpers retained from earlier app work
@@ -215,8 +215,7 @@ android/               Older Android work area
 
 ## Current Development Notes
 
-- WHOOP 4.0 is the active target.
-- WHOOP 5.0 support is not the current focus.
+- WHO*P 4.0 is the active target.
 - Background collection on iOS is limited by iOS Bluetooth/background execution
   rules. The most reliable collection happens while the app is active or while
   iOS allows the BLE session to continue.
@@ -243,6 +242,6 @@ These methods are useful for personal trends, not diagnosis.
 ## Disclaimer
 
 NOOP is experimental software for personal data access and self-tracking. It may
-be wrong, incomplete, or inconsistent with the official WHOOP app. Do not use it
+be wrong, incomplete, or inconsistent with the official WHO*P app. Do not use it
 for medical decisions, safety-critical decisions, or diagnosis. Use it only with
 hardware you own and only where doing so is lawful and allowed.
