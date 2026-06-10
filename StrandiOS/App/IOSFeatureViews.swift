@@ -170,7 +170,11 @@ struct TodayIOSView: View {
                     ScoreCard(title: "Calories", value: "\(Int(calories.rounded()))", unit: "kcal", color: StrandPalette.metricAmber)
                 }
                 NavigationLink {
-                    HeartRateDayView(samples: scanner.metrics.todayHRSamples, intervals: heartRateIntervals)
+                    HeartRateDayView(
+                        selectedDate: selectedDate,
+                        samples: fullHeartRateSamples,
+                        intervals: heartRateIntervals
+                    )
                 } label: {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
@@ -217,7 +221,7 @@ struct TodayIOSView: View {
         }
         .onChange(of: selectedDate) { date in
             if Calendar.current.isDateInToday(date) {
-                scanner.refreshDeviceMetrics(date: date)
+                scanner.loadLoggedMetricsForDay(date)
                 pedometer.refresh(date: date) { date, steps in
                     scanner.recordPhoneSteps(steps, for: date)
                 }
@@ -243,6 +247,9 @@ struct TodayIOSView: View {
     }
 
     private var effectiveDailyStrain: Double? {
+        if isDisplayingLoggedSnapshot {
+            return scanner.metrics.strain
+        }
         guard Calendar.current.isDateInToday(selectedDate) else {
             return scanner.metrics.strain
         }
@@ -274,6 +281,10 @@ struct TodayIOSView: View {
 
     private var recoveryAdjustedLoad: Double? {
         IOSStrainEstimator.recoveryAdjustedLoad(strain: effectiveDailyStrain, recovery: effectiveRecoveryScore)
+    }
+
+    private var isDisplayingLoggedSnapshot: Bool {
+        scanner.metrics.status == "Logged metrics snapshot" || scanner.metrics.status == "Final logged metrics"
     }
 
     private var awakeDayHRSamples: [IOSMetricHRSample] {
@@ -312,6 +323,10 @@ struct TodayIOSView: View {
     }
 
     private var dailyCalculationSamples: [IOSMetricHRSample] {
+        scanner.metrics.dailyHRSamples.isEmpty ? scanner.metrics.todayHRSamples : scanner.metrics.dailyHRSamples
+    }
+
+    private var fullHeartRateSamples: [IOSMetricHRSample] {
         scanner.metrics.dailyHRSamples.isEmpty ? scanner.metrics.todayHRSamples : scanner.metrics.dailyHRSamples
     }
 
@@ -466,9 +481,12 @@ private struct WorkoutsIOSView: View {
                         SourceRow(name: "No logged workouts", status: "Start a workout above, then finish it to save HR, strain, and notes.", icon: "list.bullet.clipboard.fill", color: StrandPalette.textTertiary)
                     } else {
                         ForEach(recorder.workouts) { workout in
-                            LoggedWorkoutRow(workout: workout) {
-                                recorder.delete(workout)
+                            NavigationLink {
+                                WorkoutDetailView(workout: workout)
+                            } label: {
+                                LoggedWorkoutRow(workout: workout)
                             }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -919,6 +937,7 @@ private struct PlanSummaryContent: View {
             }
         }
         .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
     }
 
@@ -1224,7 +1243,6 @@ private struct WorkoutTypeButton: View {
 
 private struct LoggedWorkoutRow: View {
     let workout: IOSLoggedWorkout
-    let delete: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1238,13 +1256,9 @@ private struct LoggedWorkoutRow: View {
                         .foregroundStyle(StrandPalette.textSecondary)
                 }
                 Spacer()
-                Button(action: delete) {
-                    Image(systemName: "trash")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(StrandPalette.statusCritical)
-                        .frame(width: 34, height: 34)
-                }
-                .buttonStyle(.plain)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(StrandPalette.textTertiary)
             }
 
             HStack(spacing: 10) {
@@ -1844,6 +1858,10 @@ private struct TodayWorkoutRow: View {
 }
 
 private struct WorkoutDetailView: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var recorder: IOSWorkoutRecorder
+    @State private var showingDeleteConfirmation = false
+
     let workout: IOSLoggedWorkout
 
     var body: some View {
@@ -1859,6 +1877,7 @@ private struct WorkoutDetailView: View {
                 }
                 HRLineChart(samples: workout.hrSamples)
                     .frame(height: 220)
+                LoggedStrengthResultsView(workout: workout)
                 if workout.typeId == "run" || workout.typeId == "hiking" {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 10) {
@@ -1882,18 +1901,128 @@ private struct WorkoutDetailView: View {
                 }
                 .padding(12)
                 .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 12))
+                Button(role: .destructive) {
+                    showingDeleteConfirmation = true
+                } label: {
+                    Label("Delete Workout", systemImage: "trash")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 13)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(StrandPalette.statusCritical)
+                .background(StrandPalette.statusCritical.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                .overlay { RoundedRectangle(cornerRadius: 12).stroke(StrandPalette.statusCritical.opacity(0.35), lineWidth: 1) }
             }
             .padding(16)
             .padding(.bottom, 96)
         }
         .navigationTitle(workout.typeName)
         .navigationBarTitleDisplayMode(.inline)
+        .alert("Delete Workout?", isPresented: $showingDeleteConfirmation) {
+            Button("Delete Forever", role: .destructive) {
+                recorder.delete(workout)
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This workout will be gone forever.")
+        }
     }
 
     private static func paceText(_ seconds: Double) -> String {
         guard seconds.isFinite && seconds > 0 else { return "--" }
         let total = Int(seconds.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+private struct LoggedStrengthResultsView: View {
+    let workout: IOSLoggedWorkout
+
+    var body: some View {
+        if let plan = workout.planSnapshot, plan.kind == .strength, !plan.strengthExercises.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("STRENGTH LOG")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(StrandPalette.textTertiary)
+                Text(plan.name)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(StrandPalette.textPrimary)
+                ForEach(plan.strengthExercises) { exercise in
+                    LoggedStrengthExerciseResult(exercise: exercise, logs: workout.strengthSetLogs)
+                }
+            }
+            .padding(12)
+            .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 12))
+            .overlay { RoundedRectangle(cornerRadius: 12).stroke(StrandPalette.hairline, lineWidth: 1) }
+        } else if !workout.strengthSetLogs.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("STRENGTH LOG")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(StrandPalette.textTertiary)
+                ForEach(workout.strengthSetLogs.sorted { $0.setIndex < $1.setIndex }) { log in
+                    SourceRow(
+                        name: "Set \(log.setIndex)",
+                        status: formattedWeight(log.weight),
+                        icon: "dumbbell.fill",
+                        color: StrandPalette.strain066
+                    )
+                }
+            }
+            .padding(12)
+            .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 12))
+            .overlay { RoundedRectangle(cornerRadius: 12).stroke(StrandPalette.hairline, lineWidth: 1) }
+        }
+    }
+
+    private func formattedWeight(_ weight: String) -> String {
+        let trimmed = weight.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Not logged" : "\(trimmed) lb"
+    }
+}
+
+private struct LoggedStrengthExerciseResult: View {
+    let exercise: IOSStrengthPlanExercise
+    let logs: [IOSStrengthSetLog]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(exercise.name) · \(exercise.sets)x\(exercise.reps)")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(StrandPalette.textPrimary)
+            ForEach(1...max(1, exercise.sets), id: \.self) { setIndex in
+                HStack(spacing: 10) {
+                    Text("Set \(setIndex)")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .frame(width: 54, alignment: .leading)
+                    Text(weightText(for: setIndex))
+                        .font(.footnote.weight(.bold).monospacedDigit())
+                        .foregroundStyle(weightLogged(for: setIndex) ? StrandPalette.textPrimary : StrandPalette.textTertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("\(exercise.reps) reps")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
+                .padding(10)
+                .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 9))
+            }
+        }
+        .padding(10)
+        .background(StrandPalette.surfaceInset.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func weightLogged(for setIndex: Int) -> Bool {
+        !(logs.first { $0.exerciseId == exercise.id && $0.setIndex == setIndex }?.weight ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+    }
+
+    private func weightText(for setIndex: Int) -> String {
+        let weight = logs.first { $0.exerciseId == exercise.id && $0.setIndex == setIndex }?.weight ?? ""
+        let trimmed = weight.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Not logged" : "\(trimmed) lb"
     }
 }
 
@@ -2003,6 +2132,8 @@ private struct HospitalHRChart: View {
     var compactPreview = true
     var visibleWindowHoursOverride: Int? = nil
     var allowsPinchZoom = false
+    var sleepEditMode = false
+    var editableSleepWindow: Binding<SleepWindowDraft?>? = nil
 
     var body: some View {
         InteractiveHRChart(
@@ -2012,7 +2143,9 @@ private struct HospitalHRChart: View {
             averagePerMinute: true,
             visibleWindowHours: visibleWindowHoursOverride ?? (compactPreview ? 12 : nil),
             allowsSelection: !compactPreview,
-            allowsPinchZoom: allowsPinchZoom
+            allowsPinchZoom: allowsPinchZoom,
+            sleepEditMode: sleepEditMode,
+            editableSleepWindow: editableSleepWindow
         )
     }
 }
@@ -2032,6 +2165,11 @@ private struct HRChartInterval: Identifiable, Equatable {
 
     var startTs: Int { Int(start.timeIntervalSince1970) }
     var endTs: Int { Int(end.timeIntervalSince1970) }
+}
+
+private struct SleepWindowDraft: Equatable {
+    var start: Date
+    var end: Date
 }
 
 private struct HRChartLayout {
@@ -2067,10 +2205,13 @@ private struct InteractiveHRChart: View {
     var visibleWindowHours: Int?
     var allowsSelection = true
     var allowsPinchZoom = false
+    var sleepEditMode = false
+    var editableSleepWindow: Binding<SleepWindowDraft?>? = nil
     @State private var selectedSample: HRChartSample?
     @State private var baseZoom: CGFloat = 1
     @State private var pinchScale: CGFloat = 1
     @State private var zoomCenterTs: Int?
+    @State private var sleepDragAnchor: SleepWindowDraft?
 
     var body: some View {
         GeometryReader { proxy in
@@ -2115,13 +2256,15 @@ private struct InteractiveHRChart: View {
                         zoomBadge(layout: layout)
                     }
 
+                    sleepEditOverlay(layout: layout)
+
                     if let selectedSample {
                         selectionOverlay(sample: selectedSample, layout: layout)
                     }
                 }
             }
             .contentShape(Rectangle())
-            .gesture(allowsSelection ? DragGesture(minimumDistance: 0)
+            .gesture((allowsSelection && !sleepEditMode) ? DragGesture(minimumDistance: 0)
                 .onChanged { value in
                     updateSelection(near: value.location, samples: chartSamples, layout: layout)
                 } : nil)
@@ -2240,6 +2383,136 @@ private struct InteractiveHRChart: View {
                     .position(x: startX + width / 2, y: layout.plotRect.midY)
             }
         }
+    }
+
+    @ViewBuilder
+    private func sleepEditOverlay(layout: HRChartLayout) -> some View {
+        if sleepEditMode,
+           let binding = editableSleepWindow,
+           let draft = binding.wrappedValue,
+           layout.plotRect.width > 0 {
+            let startTs = Int(draft.start.timeIntervalSince1970)
+            let endTs = Int(draft.end.timeIntervalSince1970)
+            let clippedStart = max(startTs, layout.firstTs)
+            let clippedEnd = min(endTs, layout.lastTs)
+            let startX = layout.x(for: clippedStart)
+            let endX = layout.x(for: clippedEnd)
+            let width = max(8, endX - startX)
+            ZStack {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(StrandPalette.metricCyan.opacity(0.18))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(StrandPalette.metricCyan, style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
+                    }
+                    .frame(width: width, height: layout.plotRect.height)
+                    .position(x: startX + width / 2, y: layout.plotRect.midY)
+                    .gesture(sleepMoveGesture(binding: binding, layout: layout))
+
+                sleepHandle(label: "Start")
+                    .position(x: startX, y: layout.plotRect.midY)
+                    .gesture(sleepEdgeGesture(edge: .start, binding: binding, layout: layout))
+
+                sleepHandle(label: "End")
+                    .position(x: endX, y: layout.plotRect.midY)
+                    .gesture(sleepEdgeGesture(edge: .end, binding: binding, layout: layout))
+
+                Text("\(timeText(startTs)) - \(timeText(endTs))")
+                    .font(.caption2.weight(.bold).monospacedDigit())
+                    .foregroundStyle(StrandPalette.textPrimary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(StrandPalette.surfaceRaised, in: Capsule())
+                    .overlay { Capsule().stroke(StrandPalette.metricCyan.opacity(0.55), lineWidth: 1) }
+                    .position(
+                        x: min(max(startX + width / 2, layout.plotRect.minX + 58), layout.plotRect.maxX - 58),
+                        y: layout.plotRect.minY + 16
+                    )
+            }
+        }
+    }
+
+    private enum SleepEditEdge {
+        case start
+        case end
+    }
+
+    private func sleepHandle(label: String) -> some View {
+        VStack(spacing: 3) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(StrandPalette.metricCyan)
+                .frame(width: 4, height: 42)
+            Text(label)
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(StrandPalette.metricCyan)
+        }
+        .frame(width: 44, height: 72)
+        .contentShape(Rectangle())
+    }
+
+    private func sleepMoveGesture(binding: Binding<SleepWindowDraft?>, layout: HRChartLayout) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if sleepDragAnchor == nil {
+                    sleepDragAnchor = binding.wrappedValue
+                }
+                guard let anchor = sleepDragAnchor else { return }
+                let delta = tsDelta(for: value.translation.width, layout: layout)
+                let duration = max(30 * 60, Int(anchor.end.timeIntervalSince(anchor.start)))
+                let domainStart = layout.firstTs
+                let domainEnd = layout.lastTs
+                let anchorStart = Int(anchor.start.timeIntervalSince1970)
+                let newStart = min(max(domainStart, anchorStart + delta), max(domainStart, domainEnd - duration))
+                binding.wrappedValue = SleepWindowDraft(
+                    start: Date(timeIntervalSince1970: TimeInterval(newStart)),
+                    end: Date(timeIntervalSince1970: TimeInterval(newStart + duration))
+                )
+            }
+            .onEnded { _ in
+                sleepDragAnchor = nil
+            }
+    }
+
+    private func sleepEdgeGesture(edge: SleepEditEdge, binding: Binding<SleepWindowDraft?>, layout: HRChartLayout) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if sleepDragAnchor == nil {
+                    sleepDragAnchor = binding.wrappedValue
+                }
+                guard let anchor = sleepDragAnchor else { return }
+                let delta = tsDelta(for: value.translation.width, layout: layout)
+                let minDuration = 30 * 60
+                let anchorStart = Int(anchor.start.timeIntervalSince1970)
+                let anchorEnd = Int(anchor.end.timeIntervalSince1970)
+                switch edge {
+                case .start:
+                    let newStart = min(
+                        max(layout.firstTs, anchorStart + delta),
+                        anchorEnd - minDuration
+                    )
+                    binding.wrappedValue = SleepWindowDraft(
+                        start: Date(timeIntervalSince1970: TimeInterval(newStart)),
+                        end: anchor.end
+                    )
+                case .end:
+                    let newEnd = max(
+                        min(layout.lastTs, anchorEnd + delta),
+                        anchorStart + minDuration
+                    )
+                    binding.wrappedValue = SleepWindowDraft(
+                        start: anchor.start,
+                        end: Date(timeIntervalSince1970: TimeInterval(newEnd))
+                    )
+                }
+            }
+            .onEnded { _ in
+                sleepDragAnchor = nil
+            }
+    }
+
+    private func tsDelta(for translation: CGFloat, layout: HRChartLayout) -> Int {
+        guard layout.plotRect.width > 0 else { return 0 }
+        return Int((Double(translation / layout.plotRect.width) * Double(layout.lastTs - layout.firstTs)).rounded())
     }
 
     private func yAxisLabels(layout: HRChartLayout) -> some View {
@@ -2378,18 +2651,26 @@ private struct HRIntervalLegend: View {
 
 private struct HeartRateDayView: View {
     @EnvironmentObject private var scanner: IOSWhoopScanner
+    let selectedDate: Date
     let samples: [IOSMetricHRSample]
     let intervals: [HRChartInterval]
+    @State private var isEditingSleep = false
+    @State private var sleepDraft: SleepWindowDraft?
+    @State private var sleepSaveStatus: String?
+    @State private var isSavingSleep = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                sleepEditControls
                 HospitalHRChart(
                     samples: samples,
                     intervals: intervals,
                     compactPreview: false,
                     visibleWindowHoursOverride: nil,
-                    allowsPinchZoom: true
+                    allowsPinchZoom: true,
+                    sleepEditMode: isEditingSleep,
+                    editableSleepWindow: $sleepDraft
                 )
                     .frame(height: 240)
                 HRIntervalLegend(intervals: intervals)
@@ -2414,11 +2695,101 @@ private struct HeartRateDayView: View {
         }
         .navigationTitle("Heart Rate")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            if sleepDraft == nil {
+                sleepDraft = currentSleepWindow ?? defaultSleepWindow
+            }
+        }
     }
 
     private var average: Int? {
         guard !samples.isEmpty else { return nil }
         return Int((Double(samples.reduce(0) { $0 + $1.bpm }) / Double(samples.count)).rounded())
+    }
+
+    private var sleepEditControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                ActionButton(
+                    title: isEditingSleep ? "Done Editing" : "Adjust Sleep",
+                    icon: isEditingSleep ? "checkmark.circle.fill" : "moon.zzz.fill",
+                    color: StrandPalette.metricCyan
+                ) {
+                    if isEditingSleep {
+                        Task { await saveSleepWindow() }
+                    } else {
+                        sleepDraft = currentSleepWindow ?? defaultSleepWindow
+                        sleepSaveStatus = nil
+                        isEditingSleep = true
+                    }
+                }
+                .disabled(isSavingSleep || samples.count < 2)
+
+                if isEditingSleep {
+                    ActionButton(title: "Auto", icon: "arrow.counterclockwise", color: StrandPalette.metricAmber) {
+                        Task { await resetSleepWindow() }
+                    }
+                    .disabled(isSavingSleep)
+                }
+            }
+
+            if isEditingSleep {
+                Text("Drag the cyan sleep box or its start/end handles, then tap Done Editing to recalculate recovery from that saved window.")
+                    .font(.caption)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let sleepSaveStatus {
+                Text(sleepSaveStatus)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(StrandPalette.textSecondary)
+            }
+        }
+    }
+
+    private var currentSleepWindow: SleepWindowDraft? {
+        guard let sleep = intervals.first(where: { $0.title == "Sleep" }),
+              sleep.end > sleep.start else { return nil }
+        return SleepWindowDraft(start: sleep.start, end: sleep.end)
+    }
+
+    private var defaultSleepWindow: SleepWindowDraft? {
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: selectedDate)
+        let defaultEnd = calendar.date(bySettingHour: 7, minute: 0, second: 0, of: dayStart) ?? dayStart.addingTimeInterval(7 * 3600)
+        let defaultStart = defaultEnd.addingTimeInterval(-8 * 3600)
+        if let first = samples.first?.ts,
+           let last = samples.last?.ts,
+           last - first >= 30 * 60 {
+            let clampedStart = max(Int(defaultStart.timeIntervalSince1970), first)
+            let clampedEnd = min(Int(defaultEnd.timeIntervalSince1970), last)
+            if clampedEnd - clampedStart >= 30 * 60 {
+                return SleepWindowDraft(
+                    start: Date(timeIntervalSince1970: TimeInterval(clampedStart)),
+                    end: Date(timeIntervalSince1970: TimeInterval(clampedEnd))
+                )
+            }
+        }
+        return SleepWindowDraft(start: defaultStart, end: defaultEnd)
+    }
+
+    private func saveSleepWindow() async {
+        guard let sleepDraft else { return }
+        isSavingSleep = true
+        await scanner.setSleepWindow(start: sleepDraft.start, end: sleepDraft.end, for: selectedDate)
+        isSavingSleep = false
+        isEditingSleep = false
+        sleepSaveStatus = "Sleep window saved. Recovery was recalculated from this window."
+    }
+
+    private func resetSleepWindow() async {
+        isSavingSleep = true
+        await scanner.resetSleepWindow(for: selectedDate)
+        sleepDraft = currentSleepWindow ?? defaultSleepWindow
+        isSavingSleep = false
+        isEditingSleep = false
+        sleepSaveStatus = "Manual sleep window cleared. Auto sleep was recalculated once."
     }
 }
 
@@ -2435,11 +2806,15 @@ private struct RecoveryExplanationView: View {
                 )
                 ExplanationBlock(
                     title: "How it is calculated",
-                    text: "Recovery is a local NOOP score from WHOOP sleep data. It compares overnight HRV and resting HR against your own baseline, then adjusts with sleep quality, respiratory rate, recent load, and raw SpO2/skin-temp deviations when those signals are available."
+                    text: "Recovery is calculated after your main sleep window from the WHOOP data collected while you were asleep. NOOP compares your overnight HRV and resting heart rate with your own rolling baseline, then blends in sleep performance, respiration, recent training load, and unusual raw SpO2 or skin-temperature changes when those signals are available."
                 )
                 ExplanationBlock(
-                    title: "What matters most",
-                    text: "HRV is the strongest driver. Lower resting HR, better sleep, stable respiration, supported recent load, and no unusual raw SpO2 or skin-temp drift all push recovery higher. Missing optional signals are skipped instead of blocking the score."
+                    title: "Main drivers",
+                    text: "HRV is the strongest driver: higher-than-baseline overnight RMSSD raises recovery. A lower-than-baseline resting heart rate also helps. Sleep performance uses duration, efficiency, and estimated restorative sleep. Respiration is included as a smaller readiness signal. Recent strain uses your logged strain history, and raw SpO2/skin-temp deviations can lower recovery when they look unusual for you."
+                )
+                ExplanationBlock(
+                    title: "Score behavior",
+                    text: "Each available input is converted into a personal baseline score, then the inputs are combined and mapped onto a 0-100 scale. Missing optional inputs are skipped and the remaining weights are normalized. If your HRV baseline is still too new, NOOP shows a provisional score based on sleep, recent load, and illness-watch signals until enough nights are collected."
                 )
                 SourceRow(name: "Current inputs", status: scanner.metrics.recoveryStatus, icon: "waveform.path.ecg", color: StrandPalette.metricPurple)
             }
@@ -2467,24 +2842,16 @@ private struct StrainExplanationView: View {
                     color: rawStrain == nil ? StrandPalette.textTertiary : StrandPalette.metricCyan
                 )
                 ExplanationBlock(
-                    title: "Daily strain stream",
-                    text: "The Today strain circle is calculated from the WHOOP heart-rate samples collected after your main overnight sleep ends. NOOP builds one awake-day stream from stored WHOOP samples, live WHOOP samples, active workout samples, and saved workout samples for today. Samples with the same timestamp are merged so a workout is not double-counted. Sleep intervals are used only to find the wake-up point, then sleep time is excluded from daily strain."
-                )
-                ExplanationBlock(
-                    title: "Workout strain stream",
-                    text: "When you start a workout, NOOP also opens a separate workout stream. That workout strain is isolated to the workout start and finish time, so it only describes that session. The daily strain circle is different: it uses the full awake-day stream, so the workout period is naturally included along with the heart-rate load from before and after the workout."
+                    title: "What it measures",
+                    text: "Strain estimates cardiovascular load accumulated while you are awake. The daily score starts after your main overnight sleep ends and excludes sleep time. Workout strain uses the same heart-rate-load method, but only over the workout start-to-finish window, so a workout can be viewed on its own while the Today score represents the whole awake day."
                 )
                 ExplanationBlock(
                     title: "Heart-rate load",
-                    text: "NOOP converts each heart-rate interval into heart-rate reserve load. Heart-rate reserve compares your current BPM with an estimated resting heart rate and estimated max heart rate, so 130 BPM is treated differently depending on how hard that is relative to your range. For higher-intensity periods, NOOP uses Edwards-style heart-rate-zone TRIMP weighting. For lighter awake activity below the Edwards zones, it uses a Banister-style continuous TRIMP curve so walking, chores, and easy movement can add small amounts of strain instead of being ignored."
+                    text: "NOOP converts each WHOOP heart-rate interval into heart-rate reserve load. Heart-rate reserve compares your current BPM with estimated resting and max heart rate, so the same BPM can mean different stress depending on your range. Higher-intensity time is weighted with Edwards-style heart-rate-zone TRIMP. Lower-intensity awake movement uses a Banister-style continuous TRIMP curve, allowing walks and easy activity to add small amounts of strain."
                 )
                 ExplanationBlock(
                     title: "0-21 score",
                     text: "After the app sums TRIMP load across the day, it maps that load onto a 0-21 logarithmic strain scale. The logarithmic shape matters: early movement raises strain quickly, but each additional point requires more work than the last. This is why going from 1 to 3 is much easier than going from 12 to 14."
-                )
-                ExplanationBlock(
-                    title: "Display fallback",
-                    text: "For the Today card, NOOP shows the highest trustworthy value available: the computed awake-day strain, any stored device-derived daily strain, or the highest saved workout strain. That guardrail prevents the daily circle from showing less than a workout it contains. If daily strain exactly matches a workout, it usually means the non-workout heart-rate load was low, the daily WHOOP stream is still catching up, or the workout is currently the strongest complete strain value available."
                 )
                 ExplanationBlock(
                     title: "Adjusted load",

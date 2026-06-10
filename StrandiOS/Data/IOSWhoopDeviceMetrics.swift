@@ -62,7 +62,8 @@ struct IOSWhoopDeviceSnapshot: Equatable {
 }
 
 enum IOSWhoopDeviceMetrics {
-    static let dailyLogVersion = 8
+    static let dailyLogVersion = 11
+    private static let maxLoggedSleepIntervals = 96
 
     static func loggedDaySnapshot(store: WhoopStore,
                                   deviceId: String,
@@ -79,8 +80,12 @@ enum IOSWhoopDeviceMetrics {
         let stats = try await store.storageStats()
         let latest = try await store.latestHRSampleTs(deviceId: deviceId)
         let hr = try await store.hrSamples(deviceId: deviceId, from: selectedStart, to: selectedEnd, limit: 120_000)
+        let contextHR = try await store.hrSamples(deviceId: deviceId, from: selectedStart - 12 * 3600, to: selectedEnd, limit: 160_000)
         let gravity = try await store.gravitySamples(deviceId: deviceId, from: selectedStart, to: selectedEnd, limit: 120_000)
         var snapshot = loggedSnapshot(values: values, stats: stats, latest: latest, hr: hr)
+        snapshot.dailyHRSamples = contextHR.enumerated().map { index, sample in
+            IOSMetricHRSample(id: index, ts: sample.ts, bpm: sample.bpm)
+        }
         snapshot.activityPoints = gravity.count
         return snapshot
     }
@@ -88,7 +93,8 @@ enum IOSWhoopDeviceMetrics {
     static func refresh(store: WhoopStore,
                         deviceId: String,
                         now: Date = Date(),
-                        calendar: Calendar = .current) async throws -> IOSWhoopDeviceSnapshot {
+                        calendar: Calendar = .current,
+                        recalculateSleep: Bool = false) async throws -> IOSWhoopDeviceSnapshot {
         let selectedStartDate = calendar.startOfDay(for: now)
         let todayStartDate = calendar.startOfDay(for: Date())
         let selectedDayIsToday = calendar.isDate(selectedStartDate, inSameDayAs: todayStartDate)
@@ -134,28 +140,67 @@ enum IOSWhoopDeviceMetrics {
         if storedSteps == nil {
             storedSteps = try await store.metricSeries(deviceId: deviceId, key: "steps", from: selectedDay, to: selectedDay).last?.value
         }
+        let strainHistoryStart = dayString(calendar.date(byAdding: .day, value: -28, to: selectedStartDate) ?? selectedStartDate, calendar: calendar)
+        let strainHistoryEnd = dayString(calendar.date(byAdding: .day, value: -1, to: selectedStartDate) ?? selectedStartDate, calendar: calendar)
+        let loggedStrainByDay = Dictionary(
+            uniqueKeysWithValues: try await store
+                .metricSeries(deviceId: deviceId, key: "strain", from: strainHistoryStart, to: strainHistoryEnd)
+                .map { ($0.day, $0.value) }
+        )
 
         let resting = restingHR(from: todayHR)
         let maxHR = StrainScorer.estimateHRmax(historyHR.map { Double($0.bpm) }, age: 30).0.nonZero
-        let sleepSummary = whoopSleepSummary(
-            hr: sleepHR,
-            rr: sleepRR,
-            resp: sleepResp,
-            gravity: sleepGravity,
-            selectedDayStart: todayStart,
-            nowTs: selectedEnd
-        )
-        let recoveryParts = recovery(
-            historyHR: historyHR,
-            historyRR: historyRR,
-            historyResp: historyResp,
-            historyGravity: historyGravity,
-            historySpO2: historySpO2,
-            historySkinTemp: historySkinTemp,
-            todayStart: todayStart,
-            nowTs: nowTs,
-            sleepSummary: sleepSummary
-        )
+        let cachedSleep = hasCurrentLoggedMetrics ? loggedSleepSummary(from: loggedMetrics) : nil
+        let manualWindow = manualSleepWindow(from: loggedMetrics)
+        let sleepSummary: (hours: Double, efficiency: Double, stages: [IOSSleepStageSummary], intervals: [IOSSleepInterval], status: String)
+        if !recalculateSleep, let cachedSleep {
+            sleepSummary = cachedSleep
+        } else if let manualWindow {
+            sleepSummary = manualSleepSummary(
+                start: manualWindow.start,
+                end: manualWindow.end,
+                hr: sleepHR,
+                rr: sleepRR,
+                resp: sleepResp,
+                gravity: sleepGravity
+            )
+        } else {
+            sleepSummary = whoopSleepSummary(
+                hr: sleepHR,
+                rr: sleepRR,
+                resp: sleepResp,
+                gravity: sleepGravity,
+                selectedDayStart: todayStart,
+                nowTs: selectedEnd
+            )
+        }
+        let recoveryParts = (!recalculateSleep && cachedSleep != nil)
+            ? (loggedRecoveryParts(from: loggedMetrics) ?? recovery(
+                historyHR: historyHR,
+                historyRR: historyRR,
+                historyResp: historyResp,
+                historyGravity: historyGravity,
+                historySpO2: historySpO2,
+                historySkinTemp: historySkinTemp,
+                todayStart: todayStart,
+                nowTs: nowTs,
+                sleepSummary: sleepSummary,
+                loggedStrainByDay: loggedStrainByDay,
+                calendar: calendar
+            ))
+            : recovery(
+                historyHR: historyHR,
+                historyRR: historyRR,
+                historyResp: historyResp,
+                historyGravity: historyGravity,
+                historySpO2: historySpO2,
+                historySkinTemp: historySkinTemp,
+                todayStart: todayStart,
+                nowTs: nowTs,
+                sleepSummary: sleepSummary,
+                loggedStrainByDay: loggedStrainByDay,
+                calendar: calendar
+            )
         let awakeStart = awakeStartTs(for: todayStart, sleepIntervals: sleepSummary.intervals)
         let awakeHR = todayHR.filter { $0.ts >= awakeStart }
         let awakeGravity = todayGravity.filter { $0.ts >= awakeStart }
@@ -234,7 +279,9 @@ enum IOSWhoopDeviceMetrics {
         snapshot.todayHRSamples = todayHR.enumerated().map { index, sample in
             IOSMetricHRSample(id: index, ts: sample.ts, bpm: sample.bpm)
         }
-        snapshot.dailyHRSamples = snapshot.todayHRSamples
+        snapshot.dailyHRSamples = sleepHR.enumerated().map { index, sample in
+            IOSMetricHRSample(id: index, ts: sample.ts, bpm: sample.bpm)
+        }
         snapshot.loadGuidance = guidance
         if !selectedDayIsToday, hasCurrentLoggedMetrics, !loggedMetrics.isEmpty {
             applyLoggedMetrics(loggedMetrics, to: &snapshot)
@@ -253,7 +300,7 @@ enum IOSWhoopDeviceMetrics {
     }
 
     private static func loggedMetrics(store: WhoopStore, deviceId: String, day: String) async throws -> [String: Double] {
-        let keys = [
+        var keys = [
             "noop.logVersion",
             "noop.snapshotUpdatedAt",
             "noop.finalized",
@@ -264,6 +311,10 @@ enum IOSWhoopDeviceMetrics {
             "noop.sleepEfficiency",
             "noop.sleepStartTs",
             "noop.sleepEndTs",
+            "noop.sleepIntervalCount",
+            "noop.sleepManualStartTs",
+            "noop.sleepManualEndTs",
+            "noop.sleepManualUpdatedAt",
             "noop.sleepCoreHours",
             "noop.sleepDeepHours",
             "noop.sleepREMHours",
@@ -278,6 +329,11 @@ enum IOSWhoopDeviceMetrics {
             "noop.sleepSpO2RawRatio",
             "noop.sleepSkinTempRaw",
         ]
+        for index in 0..<maxLoggedSleepIntervals {
+            keys.append("noop.sleepInterval.\(index).startTs")
+            keys.append("noop.sleepInterval.\(index).endTs")
+            keys.append("noop.sleepInterval.\(index).stage")
+        }
         var values: [String: Double] = [:]
         for key in keys {
             if let point = try await store.metricSeries(deviceId: deviceId, key: key, from: day, to: day).last {
@@ -339,6 +395,14 @@ enum IOSWhoopDeviceMetrics {
             guard let hours = values[key], hours > 0.01 else { return nil }
             return IOSSleepStageSummary(name: name, hours: hours)
         }
+        if let storedIntervals = loggedSleepIntervals(from: values), !storedIntervals.isEmpty {
+            snapshot.whoopSleepIntervals = storedIntervals
+            if snapshot.whoopSleepStages.isEmpty {
+                snapshot.whoopSleepStages = summarize(intervals: storedIntervals).stages
+            }
+            snapshot.whoopSleepStatus = "Logged sleep snapshot"
+            return
+        }
         guard let start = values["noop.sleepStartTs"],
               let end = values["noop.sleepEndTs"],
               end > start else { return }
@@ -359,6 +423,113 @@ enum IOSWhoopDeviceMetrics {
             }
         }
         snapshot.whoopSleepStatus = "Logged sleep snapshot"
+    }
+
+    private static func loggedSleepIntervals(from values: [String: Double]) -> [IOSSleepInterval]? {
+        let count = min(max(0, Int((values["noop.sleepIntervalCount"] ?? 0).rounded())), maxLoggedSleepIntervals)
+        guard count > 0 else { return nil }
+        let intervals = (0..<count).compactMap { index -> IOSSleepInterval? in
+            guard let start = values["noop.sleepInterval.\(index).startTs"],
+                  let end = values["noop.sleepInterval.\(index).endTs"],
+                  let stageCode = values["noop.sleepInterval.\(index).stage"],
+                  end > start else { return nil }
+            return IOSSleepInterval(
+                start: Date(timeIntervalSince1970: start),
+                end: Date(timeIntervalSince1970: end),
+                stage: sleepStageName(for: Int(stageCode.rounded()))
+            )
+        }
+        return intervals.isEmpty ? nil : intervals.sorted { $0.start < $1.start }
+    }
+
+    private static func sleepStageName(for code: Int) -> String {
+        switch code {
+        case 0: return "Awake"
+        case 2: return "Deep"
+        case 3: return "REM"
+        default: return "Core"
+        }
+    }
+
+    private static func loggedSleepSummary(from values: [String: Double]) -> (hours: Double, efficiency: Double, stages: [IOSSleepStageSummary], intervals: [IOSSleepInterval], status: String)? {
+        guard let start = values["noop.sleepStartTs"],
+              let end = values["noop.sleepEndTs"],
+              start > 0,
+              end > start else { return nil }
+        var snapshot = IOSWhoopDeviceSnapshot()
+        snapshot.whoopSleepHours = max(0, values["noop.sleepHours"] ?? 0)
+        snapshot.whoopSleepEfficiency = max(0, min(1, values["noop.sleepEfficiency"] ?? 0))
+        applyLoggedSleep(values, to: &snapshot)
+        guard !snapshot.whoopSleepIntervals.isEmpty else { return nil }
+        let hours = snapshot.whoopSleepHours > 0
+            ? snapshot.whoopSleepHours
+            : snapshot.whoopSleepIntervals
+                .filter { $0.stage != "Awake" }
+                .reduce(0.0) { $0 + $1.end.timeIntervalSince($1.start) / 3600.0 }
+        let efficiency = snapshot.whoopSleepEfficiency > 0
+            ? snapshot.whoopSleepEfficiency
+            : min(1.0, max(0.0, hours / max((end - start) / 3600.0, 0.1)))
+        let status = (values["noop.sleepManualUpdatedAt"] ?? 0) > 0
+            ? "Adjusted sleep window"
+            : "Logged sleep snapshot"
+        return (hours, efficiency, snapshot.whoopSleepStages, snapshot.whoopSleepIntervals, status)
+    }
+
+    private static func manualSleepWindow(from values: [String: Double]) -> (start: Int, end: Int)? {
+        guard let start = values["noop.sleepManualStartTs"],
+              let end = values["noop.sleepManualEndTs"],
+              start > 0,
+              end - start >= 30 * 60 else { return nil }
+        return (Int(start.rounded()), Int(end.rounded()))
+    }
+
+    private static func manualSleepSummary(start: Int,
+                                           end: Int,
+                                           hr: [HRSample],
+                                           rr: [RRInterval],
+                                           resp: [RespSample],
+                                           gravity: [GravitySample]) -> (hours: Double, efficiency: Double, stages: [IOSSleepStageSummary], intervals: [IOSSleepInterval], status: String) {
+        let staged = stageKnownSleepWindow(
+            start: start,
+            end: end,
+            hr: hr,
+            rr: rr,
+            resp: resp,
+            gravity: gravity,
+            statusPrefix: "Adjusted sleep window"
+        )
+        let intervals = staged.intervals
+        let safeIntervals = intervals.isEmpty
+            ? [IOSSleepInterval(
+                start: Date(timeIntervalSince1970: TimeInterval(start)),
+                end: Date(timeIntervalSince1970: TimeInterval(end)),
+                stage: "Core"
+            )]
+            : intervals
+        let summary = summarize(intervals: safeIntervals)
+        return (
+            summary.hours,
+            0.85,
+            summary.stages,
+            safeIntervals,
+            staged.status
+        )
+    }
+
+    private static func loggedRecoveryParts(from values: [String: Double]) -> (score: Double?, status: String, restingHR: Int?, hrv: Double?, spo2RawRatio: Double?, skinTempRaw: Double?)? {
+        guard let recovery = values["recovery"] else { return nil }
+        let restingHR = values["noop.restingHR"].map { max(0, Int($0.rounded())) }
+        let hrv = values["noop.hrvRMSSD"]
+        let spo2 = values["noop.sleepSpO2RawRatio"]
+        let skinTemp = values["noop.sleepSkinTempRaw"]
+        return (
+            recovery,
+            "Logged recovery snapshot from saved sleep window",
+            restingHR,
+            hrv,
+            spo2,
+            skinTemp
+        )
     }
 
     private static func status(decodedRows: Int, latest: Date?) -> String {
@@ -431,7 +602,14 @@ enum IOSWhoopDeviceMetrics {
             return sleepSummary(from: stagedSegments, status: "WHOOP staged sleep from HR/R-R/motion")
         }
 
-        return estimatedOvernightSleepSummary(hr: hr, rr: rr, selectedDayStart: selectedDayStart, nowTs: nowTs)
+        return estimatedOvernightSleepSummary(
+            hr: hr,
+            rr: rr,
+            resp: resp,
+            gravity: gravity,
+            selectedDayStart: selectedDayStart,
+            nowTs: nowTs
+        )
     }
 
     private static func sleepSummary(from segments: [StageSegment],
@@ -545,6 +723,8 @@ enum IOSWhoopDeviceMetrics {
 
     private static func estimatedOvernightSleepSummary(hr: [HRSample],
                                                        rr: [RRInterval],
+                                                       resp: [RespSample],
+                                                       gravity: [GravitySample],
                                                        selectedDayStart: Int,
                                                        nowTs: Int) -> (hours: Double, efficiency: Double, stages: [IOSSleepStageSummary], intervals: [IOSSleepInterval], status: String) {
         let rows = hr
@@ -603,22 +783,81 @@ enum IOSWhoopDeviceMetrics {
 
         run.start = max(run.start, nightRows.first?.ts ?? run.start)
         run.end = min(run.end, nightRows.last?.ts ?? run.end)
-        let intervals = stageEstimatedSleep(
+        let staged = stageKnownSleepWindow(
             start: run.start,
             end: run.end,
-            hr: nightRows,
+            hr: hr,
             rr: rr,
-            fallbackStage: "Core"
+            resp: resp,
+            gravity: gravity,
+            statusPrefix: "Estimated overnight WHOOP sleep"
         )
+        let intervals = staged.intervals
         let summary = summarize(intervals: intervals)
         let lowHRSummary = (
             summary.hours,
             0.85,
             summary.stages,
             intervals,
-            "Estimated from low overnight WHOOP HR (\(nightRows.count) HR samples)"
+            "\(staged.status) (\(nightRows.count) HR samples)"
         )
         return lowHRSummary
+    }
+
+    private static func stageKnownSleepWindow(start: Int,
+                                              end: Int,
+                                              hr: [HRSample],
+                                              rr: [RRInterval],
+                                              resp: [RespSample],
+                                              gravity: [GravitySample],
+                                              statusPrefix: String) -> (intervals: [IOSSleepInterval], status: String) {
+        let windowHR = hr.filter { $0.ts >= start && $0.ts <= end }.sorted { $0.ts < $1.ts }
+        let windowRR = rr.filter { $0.ts >= start && $0.ts <= end }.sorted { $0.ts < $1.ts }
+        let windowResp = resp.filter { $0.ts >= start && $0.ts <= end }.sorted { $0.ts < $1.ts }
+        let windowGravity = gravity.filter { $0.ts >= start && $0.ts <= end }.sorted { $0.ts < $1.ts }
+
+        let duration = max(1, end - start)
+        let gravitySpan = max(0, (windowGravity.last?.ts ?? start) - (windowGravity.first?.ts ?? start))
+        let hasActigraphyCoverage = windowGravity.count >= 20 && Double(gravitySpan) >= Double(duration) * 0.50
+        if hasActigraphyCoverage {
+            let segments = SleepStager.stageSession(
+                start: start,
+                end: end,
+                grav: windowGravity,
+                hr: windowHR,
+                rr: windowRR,
+                resp: windowResp
+            )
+            let summary = sleepSummary(
+                from: segments,
+                status: "\(statusPrefix) staged from WHOOP \(sleepInputDescription(hr: windowHR, rr: windowRR, resp: windowResp, gravity: windowGravity))"
+            )
+            if !summary.intervals.isEmpty {
+                return (summary.intervals, summary.status)
+            }
+        }
+
+        let intervals = stageEstimatedSleep(
+            start: start,
+            end: end,
+            hr: windowHR,
+            rr: windowRR,
+            fallbackStage: "Core"
+        )
+        let inputText = windowRR.count >= 20 ? "HR/R-R only" : "HR only"
+        return (intervals, "\(statusPrefix) estimated from WHOOP \(inputText); stage confidence is lower without motion coverage")
+    }
+
+    private static func sleepInputDescription(hr: [HRSample],
+                                              rr: [RRInterval],
+                                              resp: [RespSample],
+                                              gravity: [GravitySample]) -> String {
+        var parts: [String] = []
+        if !hr.isEmpty { parts.append("HR") }
+        if rr.count >= 20 { parts.append("R-R") }
+        if resp.count >= 30 { parts.append("respiration") }
+        if gravity.count >= 20 { parts.append("motion") }
+        return parts.isEmpty ? "available sensors" : parts.joined(separator: "/")
     }
 
     private static func stageEstimatedSleep(start: Int,
@@ -627,45 +866,53 @@ enum IOSWhoopDeviceMetrics {
                                             rr: [RRInterval],
                                             fallbackStage: String) -> [IOSSleepInterval] {
         let epochS = 5 * 60
-        var epochFeatures: [(start: Int, end: Int, hr: Double?, rmssd: Double?, moveWake: Bool)] = []
+        var epochFeatures: [(start: Int, end: Int, hr: Double?, rmssd: Double?, hrSD: Double?)] = []
         var t = start
         while t < end {
             let e = min(t + epochS, end)
             let hrRows = hr.filter { $0.ts >= t && $0.ts < e }
             let rrRows = rr.filter { $0.ts >= t && $0.ts < e }.map { Double($0.rrMs) }
-            let meanHR = hrRows.isEmpty ? nil : Double(hrRows.reduce(0) { $0 + $1.bpm }) / Double(hrRows.count)
+            let hrValues = hrRows.map { Double($0.bpm) }
+            let meanHR = hrValues.isEmpty ? nil : hrValues.reduce(0, +) / Double(hrValues.count)
+            let hrSD = hrValues.count >= 3 ? sampleSD(hrValues) : nil
             let filteredRR = HRVAnalyzer.rangeFilter(rrRows)
             let rmssd = filteredRR.count >= 5 ? HRVAnalyzer.rmssdRaw(filteredRR) : nil
-            epochFeatures.append((t, e, meanHR, rmssd, false))
+            epochFeatures.append((t, e, meanHR, rmssd, hrSD))
             t = e
         }
 
         let hrValues = epochFeatures.compactMap(\.hr)
         let rmssdValues = epochFeatures.compactMap(\.rmssd)
-        let hrLow = percentile(hrValues, 0.30)
-        let hrHigh = percentile(hrValues, 0.75)
+        let hrSDValues = epochFeatures.compactMap(\.hrSD)
+        let hrVeryLow = percentile(hrValues, 0.15)
+        let hrLow = percentile(hrValues, 0.25)
+        let hrHigh = percentile(hrValues, 0.70)
         let rmssdHigh = percentile(rmssdValues, 0.70)
         let rmssdLow = percentile(rmssdValues, 0.30)
+        let hrSDQuiet = percentile(hrSDValues, 0.40)
+        let hrSDHigh = percentile(hrSDValues, 0.65)
         let firstThirdEnd = start + max(1, (end - start) / 3)
-        let first90MinEnd = start + 90 * 60
+        let firstREMLatencyEnd = start + 70 * 60
 
         var labeled: [(start: Int, end: Int, stage: String)] = epochFeatures.map { epoch in
             guard let hrValue = epoch.hr else {
                 return (epoch.start, epoch.end, fallbackStage)
             }
             let rmssd = epoch.rmssd
+            let hrSD = epoch.hrSD
+            let earlyNight = epoch.start < firstThirdEnd
+            let remAllowed = epoch.start >= firstREMLatencyEnd
+            let lowHR = hrLow.map { hrValue <= $0 } ?? false
+            let veryLowHR = hrVeryLow.map { hrValue <= $0 } ?? false
+            let highHR = hrHigh.map { hrValue >= $0 } ?? false
+            let highRMSSD = rmssd.flatMap { value in rmssdHigh.map { value >= $0 } } ?? false
+            let lowRMSSD = rmssd.flatMap { value in rmssdLow.map { value <= $0 } } ?? false
+            let quietHR = hrSD.flatMap { value in hrSDQuiet.map { value <= $0 } } ?? false
+            let variableHR = hrSD.flatMap { value in hrSDHigh.map { value >= $0 } } ?? false
             let stage: String
-            if epoch.start < firstThirdEnd,
-               let hrLow,
-               hrValue <= hrLow,
-               let rmssdHigh,
-               let rmssd,
-               rmssd >= rmssdHigh {
+            if earlyNight && ((lowHR && highRMSSD) || (veryLowHR && quietHR)) {
                 stage = "Deep"
-            } else if epoch.start > first90MinEnd,
-                      let hrHigh,
-                      hrValue >= hrHigh,
-                      (rmssd == nil || (rmssdLow != nil && rmssd! <= rmssdLow!)) {
+            } else if remAllowed && highHR && (lowRMSSD || variableHR || rmssd == nil) {
                 stage = "REM"
             } else {
                 stage = "Core"
@@ -675,11 +922,17 @@ enum IOSWhoopDeviceMetrics {
 
         if !labeled.contains(where: { $0.stage == "Deep" }),
            let hrLow,
-           let rmssdHigh,
            let index = epochFeatures.firstIndex(where: { epoch in
-               epoch.start < firstThirdEnd &&
-               (epoch.hr ?? .greatestFiniteMagnitude) <= hrLow &&
-               (epoch.rmssd ?? -.greatestFiniteMagnitude) >= rmssdHigh
+               guard epoch.start < firstThirdEnd,
+                     let hr = epoch.hr,
+                     hr <= hrLow else { return false }
+               if let rmssd = epoch.rmssd, let rmssdHigh {
+                   return rmssd >= rmssdHigh
+               }
+               if let veryLow = hrVeryLow, let hrSD = epoch.hrSD, let quiet = hrSDQuiet {
+                   return hr <= veryLow && hrSD <= quiet
+               }
+               return false
            }) {
             labeled[index].stage = "Deep"
         }
@@ -687,8 +940,16 @@ enum IOSWhoopDeviceMetrics {
         if !labeled.contains(where: { $0.stage == "REM" }),
            let hrHigh,
            let index = epochFeatures.lastIndex(where: { epoch in
-               epoch.start > first90MinEnd &&
-               (epoch.hr ?? 0) >= hrHigh
+               guard epoch.start >= firstREMLatencyEnd,
+                     let hr = epoch.hr,
+                     hr >= hrHigh else { return false }
+               if let rmssd = epoch.rmssd, let rmssdLow {
+                   return rmssd <= rmssdLow
+               }
+               if let hrSD = epoch.hrSD, let high = hrSDHigh {
+                   return hrSD >= high
+               }
+               return true
            }) {
             labeled[index].stage = "REM"
         }
@@ -756,7 +1017,9 @@ enum IOSWhoopDeviceMetrics {
                                  historySkinTemp: [SkinTempSample],
                                  todayStart: Int,
                                  nowTs: Int,
-                                 sleepSummary: (hours: Double, efficiency: Double, stages: [IOSSleepStageSummary], intervals: [IOSSleepInterval], status: String)) -> (score: Double?, status: String, restingHR: Int?, hrv: Double?, spo2RawRatio: Double?, skinTempRaw: Double?) {
+                                 sleepSummary: (hours: Double, efficiency: Double, stages: [IOSSleepStageSummary], intervals: [IOSSleepInterval], status: String),
+                                 loggedStrainByDay: [String: Double],
+                                 calendar: Calendar) -> (score: Double?, status: String, restingHR: Int?, hrv: Double?, spo2RawRatio: Double?, skinTempRaw: Double?) {
         let currentStart = max(todayStart - 12 * 3600, nowTs - 18 * 3600)
         let sessions = SleepStager.detectSleep(hr: historyHR, rr: historyRR, resp: historyResp, gravity: historyGravity)
         let currentSession = sessions
@@ -810,7 +1073,13 @@ enum IOSWhoopDeviceMetrics {
         let rawSpO2Context = rawContext(currentSpO2Raw, history: spO2RawNights)
         let rawSkinContext = rawContext(currentSkinRaw, history: skinRawNights)
         let illnessPenalty = illnessPenaltyZ(spO2: currentSpO2Raw, spO2History: spO2RawNights, skin: currentSkinRaw, skinHistory: skinRawNights)
-        let loadRatio = acuteChronicStrainRatio(historyHR: historyHR, historyGravity: historyGravity, selectedDayStart: todayStart)
+        let loadRatio = acuteChronicStrainRatio(
+            historyHR: historyHR,
+            historyGravity: historyGravity,
+            selectedDayStart: todayStart,
+            loggedStrainByDay: loggedStrainByDay,
+            calendar: calendar
+        )
         let sleepPerf = sleepPerformance(summary: sleepSummary)
 
         guard let currentHRV, let currentRHR else {
@@ -878,13 +1147,20 @@ enum IOSWhoopDeviceMetrics {
 
     private static func acuteChronicStrainRatio(historyHR: [HRSample],
                                                 historyGravity: [GravitySample],
-                                                selectedDayStart: Int) -> Double? {
+                                                selectedDayStart: Int,
+                                                loggedStrainByDay: [String: Double],
+                                                calendar: Calendar) -> Double? {
         let maxHR = StrainScorer.estimateHRmax(historyHR.map { Double($0.bpm) }, age: 30).0.nonZero
         let sleepSessions = SleepStager.detectSleep(hr: historyHR, gravity: historyGravity)
         var strains: [Double] = []
         for offset in stride(from: 28, through: 1, by: -1) {
             let start = selectedDayStart - offset * 24 * 3600
             let end = start + 24 * 3600 - 1
+            let day = dayString(Date(timeIntervalSince1970: TimeInterval(start)), calendar: calendar)
+            if let logged = loggedStrainByDay[day] {
+                strains.append(max(0, logged))
+                continue
+            }
             let dayHR = historyHR.filter { $0.ts >= start && $0.ts <= end }
             let resting = restingHR(from: dayHR).map(Double.init) ?? 60
             let sleepIntervals = sleepSessions

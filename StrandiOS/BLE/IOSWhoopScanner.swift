@@ -29,6 +29,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private static let metricsRefreshDebounceSeconds: TimeInterval = 8
     private static let metricsRefreshIntervalSeconds: TimeInterval = 30 * 60
     private static let metricsLogVersion = IOSWhoopDeviceMetrics.dailyLogVersion
+    private static let maxLoggedSleepIntervals = 96
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -57,6 +58,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private var reconnectWorkItem: DispatchWorkItem?
     private var reconnectAttempts = 0
     private var intentionalDisconnect = false
+    private var didRunInitialMetricsRefresh = false
 
     private let deviceId = "whoop-primary"
     private let finalizedDayKey = "noop.lastFinalizedMetricsDay"
@@ -149,11 +151,15 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
             prepareLocalStore()
             scheduleMidnightFinalization()
             finalizePreviousDayIfNeeded()
+            let shouldRefreshMetrics = !didRunInitialMetricsRefresh
+            didRunInitialMetricsRefresh = true
             Task { @MainActor in
                 await collector?.flushStandardHR()
                 await collector?.flush()
                 catchUpHistoryIfNeeded(reason: "app resumed")
-                refreshDeviceMetrics()
+                if shouldRefreshMetrics {
+                    refreshDeviceMetrics()
+                }
             }
         } else {
             Task { @MainActor in
@@ -193,11 +199,75 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         await runMetricsRefresh(store: store, date: date, generation: generation, persistLog: true)
     }
 
-    func loadLoggedMetricsForDay(_ date: Date) {
-        guard !Calendar.current.isDateInToday(date) else {
-            refreshDeviceMetrics(date: date)
+    func setSleepWindow(start: Date, end: Date, for date: Date) async {
+        guard end.timeIntervalSince(start) >= 30 * 60 else {
+            append("Sleep window must be at least 30 minutes")
             return
         }
+        guard let store else {
+            prepareLocalStore()
+            return
+        }
+        metricsRefreshTask?.cancel()
+        let day = Self.dayString(date)
+        do {
+            _ = try await store.upsertMetricSeries([
+                MetricPoint(day: day, key: "noop.sleepManualStartTs", value: start.timeIntervalSince1970),
+                MetricPoint(day: day, key: "noop.sleepManualEndTs", value: end.timeIntervalSince1970),
+                MetricPoint(day: day, key: "noop.sleepManualUpdatedAt", value: Date().timeIntervalSince1970),
+            ], deviceId: deviceId)
+            append("Adjusted sleep window for \(day)")
+        } catch {
+            append("Sleep window save failed: \(error.localizedDescription)")
+            return
+        }
+
+        metricsRefreshGeneration += 1
+        let generation = metricsRefreshGeneration
+        let refreshDate = metricsDate(for: date)
+        await runMetricsRefresh(
+            store: store,
+            date: refreshDate,
+            generation: generation,
+            persistLog: true,
+            finalLog: !Calendar.current.isDateInToday(date),
+            recalculateSleep: true
+        )
+    }
+
+    func resetSleepWindow(for date: Date) async {
+        guard let store else {
+            prepareLocalStore()
+            return
+        }
+        metricsRefreshTask?.cancel()
+        let day = Self.dayString(date)
+        do {
+            _ = try await store.upsertMetricSeries([
+                MetricPoint(day: day, key: "noop.sleepManualStartTs", value: 0),
+                MetricPoint(day: day, key: "noop.sleepManualEndTs", value: 0),
+                MetricPoint(day: day, key: "noop.sleepManualUpdatedAt", value: 0),
+            ], deviceId: deviceId)
+            append("Reset sleep window for \(day)")
+        } catch {
+            append("Sleep reset failed: \(error.localizedDescription)")
+            return
+        }
+
+        metricsRefreshGeneration += 1
+        let generation = metricsRefreshGeneration
+        let refreshDate = metricsDate(for: date)
+        await runMetricsRefresh(
+            store: store,
+            date: refreshDate,
+            generation: generation,
+            persistLog: true,
+            finalLog: !Calendar.current.isDateInToday(date),
+            recalculateSleep: true
+        )
+    }
+
+    func loadLoggedMetricsForDay(_ date: Date) {
         metricsRefreshTask?.cancel()
         guard let store else {
             prepareLocalStore()
@@ -208,6 +278,12 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         }
         metricsRefreshGeneration += 1
         let generation = metricsRefreshGeneration
+        let selectedDayIsToday = Calendar.current.isDateInToday(date)
+        if selectedDayIsToday {
+            var loading = IOSWhoopDeviceSnapshot.empty
+            loading.status = "Loading today's logged metrics"
+            metrics = loading
+        }
         Task { @MainActor in
             do {
                 if let snapshot = try await IOSWhoopDeviceMetrics.loggedDaySnapshot(
@@ -217,6 +293,11 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
                 ) {
                     guard !Task.isCancelled, generation == self.metricsRefreshGeneration else { return }
                     self.metrics = snapshot
+                } else if selectedDayIsToday {
+                    guard !Task.isCancelled, generation == self.metricsRefreshGeneration else { return }
+                    var empty = IOSWhoopDeviceSnapshot.empty
+                    empty.status = "No logged metrics for today yet. Pull to refresh after the initial app update finishes."
+                    self.metrics = empty
                 } else {
                     await self.rebuildLoggedMetricsForDay(date, store: store, generation: generation)
                 }
@@ -321,10 +402,19 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         return formatter.string(from: date)
     }
 
+    private func metricsDate(for date: Date) -> Date {
+        let start = Calendar.current.startOfDay(for: date)
+        guard !Calendar.current.isDateInToday(start) else { return Date() }
+        return (Calendar.current.date(byAdding: .day, value: 1, to: start) ?? start)
+            .addingTimeInterval(-1)
+    }
+
     private func runMetricsRefresh(store: WhoopStore,
                                    date: Date,
                                    generation: Int,
-                                   persistLog: Bool) async {
+                                   persistLog: Bool,
+                                   finalLog: Bool = false,
+                                   recalculateSleep: Bool = false) async {
         isRefreshingMetrics = true
         defer {
             if generation == metricsRefreshGeneration {
@@ -335,13 +425,14 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
             let refreshed = try await IOSWhoopDeviceMetrics.refresh(
                 store: store,
                 deviceId: deviceId,
-                now: date
+                now: date,
+                recalculateSleep: recalculateSleep
             )
             guard !Task.isCancelled, generation == metricsRefreshGeneration else { return }
             let merged = mergedWithLiveHeartRate(refreshed)
             metrics = merged
             if persistLog {
-                await persistMetricSnapshot(merged, for: date, final: false)
+                await persistMetricSnapshot(merged, for: date, final: finalLog)
             }
         } catch {
             guard !Task.isCancelled, generation == metricsRefreshGeneration else { return }
@@ -366,6 +457,13 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         ]
         rows.append(MetricPoint(day: day, key: "noop.sleepStartTs", value: snapshot.whoopSleepIntervals.first?.start.timeIntervalSince1970 ?? 0))
         rows.append(MetricPoint(day: day, key: "noop.sleepEndTs", value: snapshot.whoopSleepIntervals.last?.end.timeIntervalSince1970 ?? 0))
+        let loggedIntervals = Array(snapshot.whoopSleepIntervals.prefix(Self.maxLoggedSleepIntervals))
+        rows.append(MetricPoint(day: day, key: "noop.sleepIntervalCount", value: Double(loggedIntervals.count)))
+        for (index, interval) in loggedIntervals.enumerated() {
+            rows.append(MetricPoint(day: day, key: "noop.sleepInterval.\(index).startTs", value: interval.start.timeIntervalSince1970))
+            rows.append(MetricPoint(day: day, key: "noop.sleepInterval.\(index).endTs", value: interval.end.timeIntervalSince1970))
+            rows.append(MetricPoint(day: day, key: "noop.sleepInterval.\(index).stage", value: Double(Self.sleepStageCode(interval.stage))))
+        }
         var sleepStages = [
             "noop.sleepCoreHours": 0.0,
             "noop.sleepDeepHours": 0.0,
@@ -417,6 +515,15 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
             append(final ? "Finalized metrics log for \(day)" : "Updated metrics log for \(day)")
         } catch {
             append("Metrics log failed: \(error.localizedDescription)")
+        }
+    }
+
+    private static func sleepStageCode(_ stage: String) -> Int {
+        switch stage {
+        case "Awake": return 0
+        case "Deep": return 2
+        case "REM": return 3
+        default: return 1
         }
     }
 

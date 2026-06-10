@@ -327,9 +327,10 @@ public enum SleepStager {
         return (o, f)
     }
 
-    /// Build a 30 s hypnogram for [start, end] and return StageSegments.
-    static func stageSession(start: Int, end: Int, grav: [GravitySample],
-                             hr: [HRSample], rr: [RRInterval], resp: [RespSample]) -> [StageSegment] {
+    /// Build a 30 s hypnogram for a known sleep window and return contiguous stage segments.
+    /// This is still an indirect wearable estimate, not PSG/AASM clinical staging.
+    public static func stageSession(start: Int, end: Int, grav: [GravitySample],
+                                    hr: [HRSample], rr: [RRInterval], resp: [RespSample]) -> [StageSegment] {
         let gSeg = rowsBetween(grav, start: start, end: end) { $0.ts }
         if gSeg.count < 2 { return [StageSegment(start: start, end: end, stage: "light")] }
 
