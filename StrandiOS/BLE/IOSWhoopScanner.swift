@@ -49,7 +49,6 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private var lastScheduledMetricsRefreshAt: Date?
     private var lastLiveChartMergeAt: Date?
     private var appIsActive = true
-    private var metricsRefreshDeferredWhileInactive = false
     private var midnightFinalization: DispatchWorkItem?
     private var lastForegroundHistoryCatchUpAt: Date?
     private var reconnectWorkItem: DispatchWorkItem?
@@ -146,10 +145,6 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
             prepareLocalStore()
             scheduleMidnightFinalization()
             finalizePreviousDayIfNeeded()
-            if metricsRefreshDeferredWhileInactive {
-                metricsRefreshDeferredWhileInactive = false
-                append("Updating metrics from background WHOOP data")
-            }
             Task { @MainActor in
                 await collector?.flushStandardHR()
                 await collector?.flush()
@@ -157,8 +152,6 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
                 refreshDeviceMetrics()
             }
         } else {
-            metricsRefreshDebounce?.cancel()
-            metricsRefreshDebounce = nil
             Task { @MainActor in
                 await collector?.flushStandardHR()
                 await collector?.flush()
@@ -168,11 +161,6 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
 
     func refreshDeviceMetrics(date: Date = Date()) {
         metricsRefreshTask?.cancel()
-        guard appIsActive else {
-            metricsRefreshDeferredWhileInactive = true
-            metrics.status = "Metrics paused until app opens"
-            return
-        }
         guard let store else {
             prepareLocalStore()
             if metrics == .empty {
@@ -189,11 +177,6 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
 
     func refreshDeviceMetricsNow(date: Date = Date()) async {
         metricsRefreshTask?.cancel()
-        guard appIsActive else {
-            metricsRefreshDeferredWhileInactive = true
-            metrics.status = "Metrics paused until app opens"
-            return
-        }
         guard let store else {
             prepareLocalStore()
             if metrics == .empty {
@@ -533,10 +516,6 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     }
 
     private func catchUpHistoryIfNeeded(reason: String) {
-        guard appIsActive else {
-            metricsRefreshDeferredWhileInactive = true
-            return
-        }
         guard isBondReady else { return }
         let now = Date()
         if let lastForegroundHistoryCatchUpAt,
@@ -549,17 +528,9 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     }
 
     private func scheduleMetricsRefresh() {
-        guard appIsActive else {
-            metricsRefreshDeferredWhileInactive = true
-            return
-        }
         metricsRefreshDebounce?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            guard self.appIsActive else {
-                self.metricsRefreshDeferredWhileInactive = true
-                return
-            }
             let now = Date()
             if let last = self.lastScheduledMetricsRefreshAt,
                now.timeIntervalSince(last) < 20 {
@@ -580,10 +551,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now)) else { return }
         let delay = max(1, tomorrow.timeIntervalSince(now) + 2)
         let item = DispatchWorkItem { [weak self] in
-            guard let self, self.appIsActive else {
-                self?.metricsRefreshDeferredWhileInactive = true
-                return
-            }
+            guard let self else { return }
             let finalMoment = tomorrow.addingTimeInterval(-1)
             self.finalizeMetricsDay(endingAt: finalMoment)
             self.refreshDeviceMetrics(date: Date())
@@ -638,11 +606,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
                 }
             }
             backfillDraining = false
-            if appIsActive {
-                refreshDeviceMetrics()
-            } else {
-                metricsRefreshDeferredWhileInactive = true
-            }
+            refreshDeviceMetrics()
         }
     }
 
@@ -662,11 +626,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         backfillTimeout = nil
         backfilling = false
         append("Historical sync \(reason)")
-        if appIsActive {
-            refreshDeviceMetrics()
-        } else {
-            metricsRefreshDeferredWhileInactive = true
-        }
+        refreshDeviceMetrics()
     }
 
     private func handleHeartRateMeasurement(_ data: Data) {
@@ -930,11 +890,7 @@ extension IOSWhoopScanner: @preconcurrency CBCentralManagerDelegate {
         Task { @MainActor in
             await collector?.flushStandardHR()
             await collector?.flush()
-            if appIsActive {
-                refreshDeviceMetrics()
-            } else {
-                metricsRefreshDeferredWhileInactive = true
-            }
+            refreshDeviceMetrics()
         }
         append("Disconnected\(error.map { ": \($0.localizedDescription)" } ?? "")")
         scheduleReconnect(reason: error == nil ? "link dropped" : "link error")
