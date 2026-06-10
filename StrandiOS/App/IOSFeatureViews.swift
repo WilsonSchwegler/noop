@@ -186,7 +186,7 @@ struct TodayIOSView: View {
                                 .font(.subheadline.weight(.semibold).monospacedDigit())
                                 .foregroundStyle(StrandPalette.metricRose)
                         }
-                        HospitalHRChart(samples: scanner.metrics.todayHRSamples, intervals: heartRateIntervals)
+                        HospitalHRChart(samples: heartRatePreviewSamples, intervals: heartRateIntervals)
                             .frame(height: 118)
                         HRIntervalLegend(intervals: heartRateIntervals)
                     }
@@ -253,7 +253,10 @@ struct TodayIOSView: View {
         guard Calendar.current.isDateInToday(selectedDate) else {
             return scanner.metrics.strain
         }
-        let computed = IOSStrainEstimator.awakeDayStrain(metricSamples: awakeDayHRSamples)
+        let computed = IOSStrainEstimator.awakeDayStrain(
+            metricSamples: awakeDayHRSamples,
+            restingHR: scanner.metrics.restingHR.map(Double.init)
+        )
         let bestWorkout = workoutsForSelectedDate.compactMap(\.effectiveStrain).max()
         return [computed, scanner.metrics.strain, bestWorkout]
             .compactMap { $0 }
@@ -274,8 +277,9 @@ struct TodayIOSView: View {
         if Calendar.current.isDateInToday(selectedDate) {
             return scanner.heartRate.map { "\($0) bpm" } ?? "-- bpm"
         }
-        guard !scanner.metrics.todayHRSamples.isEmpty else { return "-- bpm" }
-        let avg = scanner.metrics.todayHRSamples.reduce(0) { $0 + $1.bpm } / scanner.metrics.todayHRSamples.count
+        let samples = heartRatePreviewSamples
+        guard !samples.isEmpty else { return "-- bpm" }
+        let avg = samples.reduce(0) { $0 + $1.bpm } / samples.count
         return "avg \(avg) bpm"
     }
 
@@ -328,6 +332,19 @@ struct TodayIOSView: View {
 
     private var fullHeartRateSamples: [IOSMetricHRSample] {
         scanner.metrics.dailyHRSamples.isEmpty ? scanner.metrics.todayHRSamples : scanner.metrics.dailyHRSamples
+    }
+
+    private var heartRatePreviewSamples: [IOSMetricHRSample] {
+        samplesForSelectedDay(fullHeartRateSamples)
+    }
+
+    private func samplesForSelectedDay(_ samples: [IOSMetricHRSample]) -> [IOSMetricHRSample] {
+        let dayStart = Int(Calendar.current.startOfDay(for: selectedDate).timeIntervalSince1970)
+        let dayEnd = dayStart + 24 * 3600
+        return samples
+            .filter { $0.ts >= dayStart && $0.ts < dayEnd }
+            .enumerated()
+            .map { index, sample in IOSMetricHRSample(id: index, ts: sample.ts, bpm: sample.bpm) }
     }
 
     private var heartRateIntervals: [HRChartInterval] {
@@ -2847,11 +2864,11 @@ private struct StrainExplanationView: View {
                 )
                 ExplanationBlock(
                     title: "Heart-rate load",
-                    text: "NOOP converts each WHOOP heart-rate interval into heart-rate reserve load. Heart-rate reserve compares your current BPM with estimated resting and max heart rate, so the same BPM can mean different stress depending on your range. Higher-intensity time is weighted with Edwards-style heart-rate-zone TRIMP. Lower-intensity awake movement uses a Banister-style continuous TRIMP curve, allowing walks and easy activity to add small amounts of strain."
+                    text: "NOOP converts each WHOOP heart-rate interval into heart-rate reserve load. Heart-rate reserve compares your current BPM with estimated resting and max heart rate, so the same BPM can mean different stress depending on your range. For daily strain, normal background HR drift is ignored until it reaches the light-intensity range. Above that floor, lower-intensity movement uses a Banister-style TRIMP curve, while time at higher intensities uses Edwards-style heart-rate-zone TRIMP."
                 )
                 ExplanationBlock(
                     title: "0-21 score",
-                    text: "After the app sums TRIMP load across the day, it maps that load onto a 0-21 logarithmic strain scale. The logarithmic shape matters: early movement raises strain quickly, but each additional point requires more work than the last. This is why going from 1 to 3 is much easier than going from 12 to 14."
+                    text: "After the app sums TRIMP load across the day, it maps that load onto a 0-21 logarithmic strain scale. The logarithmic shape still makes early real activity visible, but passive low HR changes should no longer create a large morning score before you have actually moved much."
                 )
                 ExplanationBlock(
                     title: "Adjusted load",
@@ -2874,7 +2891,10 @@ private struct StrainExplanationView: View {
     }
 
     private var effectiveDailyStrain: Double? {
-        let computed = IOSStrainEstimator.awakeDayStrain(metricSamples: awakeDayHRSamples)
+        let computed = IOSStrainEstimator.awakeDayStrain(
+            metricSamples: awakeDayHRSamples,
+            restingHR: scanner.metrics.restingHR.map(Double.init)
+        )
         let bestWorkout = workoutsForToday.compactMap(\.effectiveStrain).max()
         return [computed, scanner.metrics.strain, bestWorkout]
             .compactMap { $0 }

@@ -51,7 +51,8 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private var metricsRefreshGeneration = 0
     private var storeBootstrapTask: Task<Void, Never>?
     private var lastScheduledMetricsRefreshAt: Date?
-    private var lastLiveChartMergeAt: Date?
+    private var liveChartMinute: Int?
+    private var liveChartMinuteBPMs: [Int] = []
     private var appIsActive = true
     private var midnightFinalization: DispatchWorkItem?
     private var lastForegroundHistoryCatchUpAt: Date?
@@ -162,6 +163,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
                 }
             }
         } else {
+            publishLiveHeartRateMinute()
             Task { @MainActor in
                 await collector?.flushStandardHR()
                 await collector?.flush()
@@ -893,30 +895,44 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         guard bpm >= 30, bpm <= 220 else { return }
         let sampleDate = Date(timeIntervalSince1970: TimeInterval(ts))
         guard Calendar.current.isDateInToday(sampleDate) else { return }
-        mergeDailyHeartRateSample(bpm: bpm, ts: ts, into: &metrics)
-        if let lastLiveChartMergeAt,
-           sampleDate.timeIntervalSince(lastLiveChartMergeAt) < 5 {
+
+        let minute = ts / 60
+        if liveChartMinute == nil {
+            liveChartMinute = minute
+        }
+        if liveChartMinute == minute {
+            liveChartMinuteBPMs.append(bpm)
             return
         }
+        publishLiveHeartRateMinute()
+        liveChartMinute = minute
+        liveChartMinuteBPMs = [bpm]
+    }
 
-        if metrics.todayHRSamples.last?.ts == ts {
-            return
-        }
-        lastLiveChartMergeAt = sampleDate
-
-        let nextId = (metrics.todayHRSamples.last?.id ?? -1) + 1
-        metrics.todayHRSamples.append(IOSMetricHRSample(id: nextId, ts: ts, bpm: bpm))
-        if metrics.todayHRSamples.count > 120_000 {
-            metrics.todayHRSamples.removeFirst(metrics.todayHRSamples.count - 120_000)
-        }
-        metrics.latestSampleAt = sampleDate
-        metrics.status = statusForLiveSample(sampleDate)
+    private func publishLiveHeartRateMinute() {
+        guard let minute = liveChartMinute, !liveChartMinuteBPMs.isEmpty else { return }
+        let avg = Double(liveChartMinuteBPMs.reduce(0, +)) / Double(liveChartMinuteBPMs.count)
+        mergeLiveHeartRateIntoSnapshot(
+            &metrics,
+            bpm: Int(avg.rounded()),
+            ts: minute * 60 + 30
+        )
+        liveChartMinuteBPMs.removeAll(keepingCapacity: true)
     }
 
     private func mergedWithLiveHeartRate(_ snapshot: IOSWhoopDeviceSnapshot) -> IOSWhoopDeviceSnapshot {
-        guard let heartRate else { return snapshot }
         var merged = snapshot
-        mergeLiveHeartRateIntoSnapshot(&merged, bpm: heartRate, ts: Int(Date().timeIntervalSince1970))
+        if let minute = liveChartMinute, !liveChartMinuteBPMs.isEmpty {
+            let avg = Double(liveChartMinuteBPMs.reduce(0, +)) / Double(liveChartMinuteBPMs.count)
+            mergeLiveHeartRateIntoSnapshot(
+                &merged,
+                bpm: Int(avg.rounded()),
+                ts: minute * 60 + 30
+            )
+        } else if let heartRate {
+            let nowMinute = Int(Date().timeIntervalSince1970) / 60
+            mergeLiveHeartRateIntoSnapshot(&merged, bpm: heartRate, ts: nowMinute * 60 + 30)
+        }
         return merged
     }
 
@@ -925,22 +941,31 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         let sampleDate = Date(timeIntervalSince1970: TimeInterval(ts))
         guard Calendar.current.isDateInToday(sampleDate) else { return }
         mergeDailyHeartRateSample(bpm: bpm, ts: ts, into: &snapshot)
-        if snapshot.todayHRSamples.last?.ts != ts {
-            let nextId = (snapshot.todayHRSamples.last?.id ?? -1) + 1
-            snapshot.todayHRSamples.append(IOSMetricHRSample(id: nextId, ts: ts, bpm: bpm))
-        }
+        upsertHeartRateSample(bpm: bpm, ts: ts, into: &snapshot.todayHRSamples)
         snapshot.latestSampleAt = max(snapshot.latestSampleAt ?? sampleDate, sampleDate)
         snapshot.status = statusForLiveSample(sampleDate)
     }
 
     private func mergeDailyHeartRateSample(bpm: Int, ts: Int, into snapshot: inout IOSWhoopDeviceSnapshot) {
-        if snapshot.dailyHRSamples.last?.ts == ts {
+        upsertHeartRateSample(bpm: bpm, ts: ts, into: &snapshot.dailyHRSamples)
+    }
+
+    private func upsertHeartRateSample(bpm: Int, ts: Int, into samples: inout [IOSMetricHRSample]) {
+        if let index = samples.lastIndex(where: { $0.ts == ts }) {
+            samples[index] = IOSMetricHRSample(id: samples[index].id, ts: ts, bpm: bpm)
             return
         }
-        let nextId = (snapshot.dailyHRSamples.last?.id ?? -1) + 1
-        snapshot.dailyHRSamples.append(IOSMetricHRSample(id: nextId, ts: ts, bpm: bpm))
-        if snapshot.dailyHRSamples.count > 120_000 {
-            snapshot.dailyHRSamples.removeFirst(snapshot.dailyHRSamples.count - 120_000)
+
+        let nextId = (samples.last?.id ?? -1) + 1
+        samples.append(IOSMetricHRSample(id: nextId, ts: ts, bpm: bpm))
+        if samples.count >= 2, samples[samples.count - 2].ts > ts {
+            samples = samples
+                .sorted { $0.ts < $1.ts }
+                .enumerated()
+                .map { index, sample in IOSMetricHRSample(id: index, ts: sample.ts, bpm: sample.bpm) }
+        }
+        if samples.count > 120_000 {
+            samples.removeFirst(samples.count - 120_000)
         }
     }
 

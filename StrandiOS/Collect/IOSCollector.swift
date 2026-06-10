@@ -38,6 +38,7 @@ final class IOSCollector {
     private var standardHR: [HRSample] = []
     private var standardRR: [RRInterval] = []
     private var batchStartedAt: TimeInterval
+    private var standardBatchStartedAt: TimeInterval
 
     init(store: IOSStoreWriting,
          deviceId: String,
@@ -55,6 +56,7 @@ final class IOSCollector {
         self.monotonic = monotonic
         self.onStoreFlush = onStoreFlush
         self.batchStartedAt = monotonic()
+        self.standardBatchStartedAt = self.batchStartedAt
     }
 
     func storageStats() async -> (decodedRows: Int, rawBatches: Int, rawBytes: Int)? {
@@ -132,7 +134,8 @@ final class IOSCollector {
         for interval in rr where interval >= 250 && interval <= 3000 {
             standardRR.append(RRInterval(ts: ts, rrMs: interval))
         }
-        if standardHR.count + standardRR.count >= 30 {
+        let standardAge = monotonic() - standardBatchStartedAt
+        if standardHR.count + standardRR.count >= 30 || standardAge >= policy.maxInterval {
             Task { @MainActor in await self.flushStandardHR() }
         }
     }
@@ -146,6 +149,7 @@ final class IOSCollector {
         do {
             try await store.insert(Streams(hr: hr, rr: rr), deviceId: deviceId)
             onStoreFlush()
+            standardBatchStartedAt = monotonic()
         } catch {
             standardHR.insert(contentsOf: hr, at: 0)
             standardRR.insert(contentsOf: rr, at: 0)

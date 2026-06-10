@@ -3,6 +3,11 @@ import StrandAnalytics
 import WhoopProtocol
 
 enum IOSStrainEstimator {
+    /// ACSM/Norton intensity terminology places light effort around 30% HRR
+    /// and moderate effort around 40% HRR. Daily strain should count real
+    /// awake load, not normal HR drift while sitting still.
+    private static let dailyLightIntensityFloorHRR = 0.30
+
     static func combine(_ strains: [Double]) -> Double? {
         let valid = strains.filter { $0 > 0 }
         guard !valid.isEmpty else { return nil }
@@ -37,10 +42,23 @@ enum IOSStrainEstimator {
         strain(hr: metricSamples.map { HRSample(ts: $0.ts, bpm: $0.bpm) })
     }
 
-    static func awakeDayStrain(metricSamples: [IOSMetricHRSample]) -> Double? {
+    static func awakeDayStrain(metricSamples: [IOSMetricHRSample],
+                               maxHR: Double? = nil,
+                               restingHR: Double? = nil) -> Double? {
         let hr = metricSamples.map { HRSample(ts: $0.ts, bpm: $0.bpm) }
-        return intervalAwareDailyStrain(hr, restingHR: StrainScorer.defaultRestingHR)
-            ?? strain(hr: hr, restingHR: StrainScorer.defaultRestingHR)
+        return awakeDayStrain(hr: hr, maxHR: maxHR, restingHR: restingHR)
+    }
+
+    static func awakeDayStrain(hr: [HRSample],
+                               maxHR: Double? = nil,
+                               restingHR: Double? = nil) -> Double? {
+        let sorted = hr
+            .filter { $0.bpm >= 30 && $0.bpm <= 220 }
+            .sorted { $0.ts < $1.ts }
+        guard sorted.count >= 2 else { return nil }
+        let effectiveResting = restingHR ?? estimatedRestingHR(from: sorted)
+        let effectiveMax = maxHR ?? StrainScorer.tanakaHRmax(age: Double(StrainScorer.defaultAge))
+        return intervalAwareDailyStrain(sorted, maxHR: effectiveMax, restingHR: effectiveResting)
     }
 
     private static func estimatedRestingHR(from hr: [HRSample]) -> Double {
@@ -89,12 +107,10 @@ enum IOSStrainEstimator {
         return positive(StrainScorer.trimpToStrain(trimp))
     }
 
-    private static func intervalAwareDailyStrain(_ hr: [HRSample], restingHR: Double) -> Double? {
-        let sorted = hr
-            .filter { $0.bpm >= 30 && $0.bpm <= 220 }
-            .sorted { $0.ts < $1.ts }
+    private static func intervalAwareDailyStrain(_ sorted: [HRSample],
+                                                 maxHR: Double,
+                                                 restingHR: Double) -> Double? {
         guard sorted.count >= 2 else { return nil }
-        let maxHR = StrainScorer.tanakaHRmax(age: Double(StrainScorer.defaultAge))
         guard maxHR > restingHR else { return nil }
         let reserve = maxHR - restingHR
         var trimp = 0.0
@@ -104,13 +120,15 @@ enum IOSStrainEstimator {
             let next = sorted[index + 1]
             let seconds = max(1, min(60, next.ts - current.ts))
             let x = max(0, min(1, (Double(current.bpm) - restingHR) / reserve))
-            guard x > 0 else { continue }
+            guard x >= dailyLightIntensityFloorHRR else { continue }
             let edwards = Double(edwardsWeight(for: x))
-            let banister = x * StrainScorer.banisterScale * exp(StrainScorer.banisterBMen * x)
+            let dailyX = (x - dailyLightIntensityFloorHRR) / (1.0 - dailyLightIntensityFloorHRR)
+            let banister = dailyX * StrainScorer.banisterScale * exp(StrainScorer.banisterBMen * dailyX)
             trimp += (Double(seconds) / 60.0) * max(edwards, banister)
         }
 
-        return positive(StrainScorer.trimpToStrain(trimp))
+        guard trimp.isFinite else { return nil }
+        return StrainScorer.trimpToStrain(trimp)
     }
 
     private static func edwardsWeight(for pctHRR: Double) -> Int {

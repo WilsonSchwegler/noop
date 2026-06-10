@@ -203,15 +203,12 @@ enum IOSWhoopDeviceMetrics {
             )
         let awakeStart = awakeStartTs(for: todayStart, sleepIntervals: sleepSummary.intervals)
         let awakeHR = todayHR.filter { $0.ts >= awakeStart }
-        let awakeGravity = todayGravity.filter { $0.ts >= awakeStart }
-        let strain = strainValue(
+        let strain = dailyStrainValue(
             awakeHR,
-            gravity: awakeGravity,
             maxHR: maxHR,
             restingHR: Double(resting ?? 60),
             excluding: sleepSummary.intervals
         )
-
         let detected = WorkoutDetector.detect(
             hr: todayHR,
             gravity: todayGravity,
@@ -1176,7 +1173,7 @@ enum IOSWhoopDeviceMetrics {
                             )
                         }
                 }
-            strains.append(strainValue(dayHR, gravity: [], maxHR: maxHR, restingHR: resting, excluding: sleepIntervals) ?? 0)
+            strains.append(dailyStrainValue(dayHR, maxHR: maxHR, restingHR: resting, excluding: sleepIntervals) ?? 0)
         }
         let nonZero = strains.filter { $0 > 0 }
         guard nonZero.count >= 14 else { return nil }
@@ -1369,9 +1366,8 @@ enum IOSWhoopDeviceMetrics {
                             )
                         }
                 }
-            let strain = strainValue(
+            let strain = dailyStrainValue(
                 dayHR,
-                gravity: [],
                 maxHR: StrainScorer.estimateHRmax(historyHR.map { Double($0.bpm) }, age: 30).0.nonZero,
                 restingHR: resting,
                 excluding: sleepIntervals
@@ -1437,6 +1433,18 @@ enum IOSWhoopDeviceMetrics {
         return IOSStrainEstimator.strain(
             hr: filteredHR,
             gravity: filteredGravity,
+            maxHR: maxHR,
+            restingHR: restingHR
+        )
+    }
+
+    private static func dailyStrainValue(_ hr: [HRSample],
+                                         maxHR: Double?,
+                                         restingHR: Double,
+                                         excluding sleepIntervals: [IOSSleepInterval] = []) -> Double? {
+        let filteredHR = excludingSleep(hr, intervals: sleepIntervals)
+        return IOSStrainEstimator.awakeDayStrain(
+            hr: filteredHR,
             maxHR: maxHR,
             restingHR: restingHR
         )
