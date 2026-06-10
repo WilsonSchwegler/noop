@@ -51,6 +51,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private var appIsActive = true
     private var metricsRefreshDeferredWhileInactive = false
     private var midnightFinalization: DispatchWorkItem?
+    private var lastForegroundHistoryCatchUpAt: Date?
 
     private let deviceId = "whoop-primary"
     private let finalizedDayKey = "noop.lastFinalizedMetricsDay"
@@ -138,10 +139,19 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
                 metricsRefreshDeferredWhileInactive = false
                 append("Updating metrics from background WHOOP data")
             }
-            refreshDeviceMetrics()
+            Task { @MainActor in
+                await collector?.flushStandardHR()
+                await collector?.flush()
+                catchUpHistoryIfNeeded(reason: "app resumed")
+                refreshDeviceMetrics()
+            }
         } else {
             metricsRefreshDebounce?.cancel()
             metricsRefreshDebounce = nil
+            Task { @MainActor in
+                await collector?.flushStandardHR()
+                await collector?.flush()
+            }
         }
     }
 
@@ -445,6 +455,12 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         }
     }
 
+    private func requestHistorySoon(reason: String, delay: TimeInterval = 1.5) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.catchUpHistoryIfNeeded(reason: reason)
+        }
+    }
+
     private func beginBackfill() {
         guard let peripheral, let characteristic = commandCharacteristic else { return }
         guard let backfiller else {
@@ -456,6 +472,22 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         sendCommand(22, payload: [0x00], to: characteristic, on: peripheral, writeType: .withResponse)
         armBackfillTimeout()
         append("Historical sync requested from WHOOP")
+    }
+
+    private func catchUpHistoryIfNeeded(reason: String) {
+        guard appIsActive else {
+            metricsRefreshDeferredWhileInactive = true
+            return
+        }
+        guard isBondReady else { return }
+        let now = Date()
+        if let lastForegroundHistoryCatchUpAt,
+           now.timeIntervalSince(lastForegroundHistoryCatchUpAt) < 120 {
+            return
+        }
+        lastForegroundHistoryCatchUpAt = now
+        append("Checking WHOOP history after \(reason)")
+        beginBackfill()
     }
 
     private func scheduleMetricsRefresh() {
@@ -818,6 +850,7 @@ extension IOSWhoopScanner: @preconcurrency CBCentralManagerDelegate {
         append("Connected")
         bootstrapStoreIfNeeded()
         discoverServices(on: peripheral)
+        requestHistorySoon(reason: "reconnect", delay: 3.0)
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -878,6 +911,7 @@ extension IOSWhoopScanner: @preconcurrency CBPeripheralDelegate {
             case Self.cmdWriteChar:
                 commandCharacteristic = characteristic
                 bondWithBatteryCommand(characteristic)
+                requestHistorySoon(reason: "command channel ready", delay: 1.0)
             case Self.cmdNotifyChar, Self.eventNotifyChar, Self.dataNotifyChar, Self.heartRateChar:
                 peripheral.setNotifyValue(true, for: characteristic)
                 append("Subscribed \(characteristic.uuid.uuidString)")
