@@ -26,6 +26,8 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private static let batteryService = CBUUID(string: "180F")
     private static let batteryChar = CBUUID(string: "2A19")
     private static let restoreID = "com.noopapp.noop.ios.ble.central"
+    private static let metricsRefreshDebounceSeconds: TimeInterval = 8
+    private static let metricsRefreshIntervalSeconds: TimeInterval = 30 * 60
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -529,11 +531,18 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
 
     private func scheduleMetricsRefresh() {
         metricsRefreshDebounce?.cancel()
+        let delay: TimeInterval
+        if let last = lastScheduledMetricsRefreshAt {
+            let elapsed = Date().timeIntervalSince(last)
+            delay = max(Self.metricsRefreshDebounceSeconds, Self.metricsRefreshIntervalSeconds - elapsed)
+        } else {
+            delay = Self.metricsRefreshDebounceSeconds
+        }
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
             let now = Date()
             if let last = self.lastScheduledMetricsRefreshAt,
-               now.timeIntervalSince(last) < 20 {
+               now.timeIntervalSince(last) < Self.metricsRefreshIntervalSeconds {
                 self.scheduleMetricsRefresh()
                 return
             }
@@ -541,7 +550,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
             self.refreshDeviceMetrics()
         }
         metricsRefreshDebounce = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
     }
 
     private func scheduleMidnightFinalization() {
