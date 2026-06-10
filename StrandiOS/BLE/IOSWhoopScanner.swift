@@ -12,6 +12,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     @Published var batteryPercent: Int?
     @Published var rrIntervals: [Int] = []
     @Published var isScanning = false
+    @Published var isRefreshingMetrics = false
     @Published var metrics: IOSWhoopDeviceSnapshot = .empty
     @Published var logLines: [String] = []
 
@@ -47,8 +48,12 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private var storeBootstrapTask: Task<Void, Never>?
     private var lastScheduledMetricsRefreshAt: Date?
     private var lastLiveChartMergeAt: Date?
+    private var appIsActive = true
+    private var metricsRefreshDeferredWhileInactive = false
+    private var midnightFinalization: DispatchWorkItem?
 
     private let deviceId = "whoop-primary"
+    private let finalizedDayKey = "noop.lastFinalizedMetricsDay"
 
     var canScan: Bool { central?.state == .poweredOn }
     var isConnected: Bool { peripheral?.state == .connected }
@@ -123,8 +128,30 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         append("Armed strap alarm for \(date.formatted(date: .omitted, time: .shortened))")
     }
 
+    func setAppActive(_ active: Bool) {
+        appIsActive = active
+        if active {
+            prepareLocalStore()
+            scheduleMidnightFinalization()
+            finalizePreviousDayIfNeeded()
+            if metricsRefreshDeferredWhileInactive {
+                metricsRefreshDeferredWhileInactive = false
+                append("Updating metrics from background WHOOP data")
+            }
+            refreshDeviceMetrics()
+        } else {
+            metricsRefreshDebounce?.cancel()
+            metricsRefreshDebounce = nil
+        }
+    }
+
     func refreshDeviceMetrics(date: Date = Date()) {
         metricsRefreshTask?.cancel()
+        guard appIsActive else {
+            metricsRefreshDeferredWhileInactive = true
+            metrics.status = "Metrics paused until app opens"
+            return
+        }
         guard let store else {
             prepareLocalStore()
             if metrics == .empty {
@@ -135,19 +162,27 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         metricsRefreshGeneration += 1
         let generation = metricsRefreshGeneration
         metricsRefreshTask = Task { @MainActor in
-            do {
-                let refreshed = try await IOSWhoopDeviceMetrics.refresh(
-                    store: store,
-                    deviceId: self.deviceId,
-                    now: date
-                )
-                guard !Task.isCancelled, generation == self.metricsRefreshGeneration else { return }
-                self.metrics = self.mergedWithLiveHeartRate(refreshed)
-            } catch {
-                guard !Task.isCancelled, generation == self.metricsRefreshGeneration else { return }
-                self.metrics.status = "Metric refresh failed: \(error.localizedDescription)"
-            }
+            await self.runMetricsRefresh(store: store, date: date, generation: generation, persistLog: true)
         }
+    }
+
+    func refreshDeviceMetricsNow(date: Date = Date()) async {
+        metricsRefreshTask?.cancel()
+        guard appIsActive else {
+            metricsRefreshDeferredWhileInactive = true
+            metrics.status = "Metrics paused until app opens"
+            return
+        }
+        guard let store else {
+            prepareLocalStore()
+            if metrics == .empty {
+                metrics.status = "Loading local WHOOP data"
+            }
+            return
+        }
+        metricsRefreshGeneration += 1
+        let generation = metricsRefreshGeneration
+        await runMetricsRefresh(store: store, date: date, generation: generation, persistLog: true)
     }
 
     func prepareLocalStore() {
@@ -192,6 +227,83 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
+    }
+
+    private func runMetricsRefresh(store: WhoopStore,
+                                   date: Date,
+                                   generation: Int,
+                                   persistLog: Bool) async {
+        isRefreshingMetrics = true
+        defer {
+            if generation == metricsRefreshGeneration {
+                isRefreshingMetrics = false
+            }
+        }
+        do {
+            let refreshed = try await IOSWhoopDeviceMetrics.refresh(
+                store: store,
+                deviceId: deviceId,
+                now: date
+            )
+            guard !Task.isCancelled, generation == metricsRefreshGeneration else { return }
+            let merged = mergedWithLiveHeartRate(refreshed)
+            metrics = merged
+            if persistLog {
+                await persistMetricSnapshot(merged, for: date, final: false)
+            }
+        } catch {
+            guard !Task.isCancelled, generation == metricsRefreshGeneration else { return }
+            metrics.status = "Metric refresh failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func persistMetricSnapshot(_ snapshot: IOSWhoopDeviceSnapshot,
+                                       for date: Date,
+                                       final: Bool) async {
+        guard let store else { return }
+        let day = Self.dayString(date)
+        var rows: [MetricPoint] = [
+            MetricPoint(day: day, key: "noop.snapshotUpdatedAt", value: Date().timeIntervalSince1970),
+            MetricPoint(day: day, key: "noop.finalized", value: final ? 1 : 0),
+            MetricPoint(day: day, key: "noop.sleepHours", value: snapshot.whoopSleepHours),
+            MetricPoint(day: day, key: "noop.sleepEfficiency", value: snapshot.whoopSleepEfficiency),
+            MetricPoint(day: day, key: "noop.exerciseMinutes", value: Double(snapshot.exerciseMinutes)),
+            MetricPoint(day: day, key: "noop.steps", value: Double(snapshot.steps)),
+            MetricPoint(day: day, key: "noop.activityPoints", value: Double(snapshot.activityPoints)),
+        ]
+        if let strain = snapshot.strain {
+            rows.append(MetricPoint(day: day, key: "strain", value: strain))
+        }
+        if let recovery = snapshot.recovery {
+            rows.append(MetricPoint(day: day, key: "recovery", value: recovery))
+            if let adjusted = IOSStrainEstimator.recoveryAdjustedLoad(strain: snapshot.strain, recovery: recovery) {
+                rows.append(MetricPoint(day: day, key: "noop.adjustedLoad", value: adjusted))
+            }
+        }
+        if let calories = snapshot.calories {
+            rows.append(MetricPoint(day: day, key: "noop.calories", value: calories))
+        }
+        if let restingHR = snapshot.restingHR {
+            rows.append(MetricPoint(day: day, key: "noop.restingHR", value: Double(restingHR)))
+        }
+        if let hrv = snapshot.hrvRMSSD {
+            rows.append(MetricPoint(day: day, key: "noop.hrvRMSSD", value: hrv))
+        }
+        if let sleepHRV = snapshot.sleepHRVRMSSD {
+            rows.append(MetricPoint(day: day, key: "noop.sleepHRVRMSSD", value: sleepHRV))
+        }
+        if let spo2 = snapshot.sleepSpO2RawRatio {
+            rows.append(MetricPoint(day: day, key: "noop.sleepSpO2RawRatio", value: spo2))
+        }
+        if let skinTemp = snapshot.sleepSkinTempRaw {
+            rows.append(MetricPoint(day: day, key: "noop.sleepSkinTempRaw", value: skinTemp))
+        }
+        do {
+            _ = try await store.upsertMetricSeries(rows, deviceId: deviceId)
+            append(final ? "Finalized metrics log for \(day)" : "Updated metrics log for \(day)")
+        } catch {
+            append("Metrics log failed: \(error.localizedDescription)")
+        }
     }
 
     private func discoverServices(on peripheral: CBPeripheral) {
@@ -302,6 +414,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
                     self?.ackHistoricalChunk(trim: trim, endData: endData)
                 }
                 self.append("WHOOP store ready")
+                self.finalizePreviousDayIfNeeded()
                 self.refreshDeviceMetrics()
             } catch {
                 self.append("Store setup failed: \(error.localizedDescription)")
@@ -346,9 +459,17 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     }
 
     private func scheduleMetricsRefresh() {
+        guard appIsActive else {
+            metricsRefreshDeferredWhileInactive = true
+            return
+        }
         metricsRefreshDebounce?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            guard self.appIsActive else {
+                self.metricsRefreshDeferredWhileInactive = true
+                return
+            }
             let now = Date()
             if let last = self.lastScheduledMetricsRefreshAt,
                now.timeIntervalSince(last) < 20 {
@@ -360,6 +481,52 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         }
         metricsRefreshDebounce = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 8.0, execute: item)
+    }
+
+    private func scheduleMidnightFinalization() {
+        midnightFinalization?.cancel()
+        let calendar = Calendar.current
+        let now = Date()
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now)) else { return }
+        let delay = max(1, tomorrow.timeIntervalSince(now) + 2)
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.appIsActive else {
+                self?.metricsRefreshDeferredWhileInactive = true
+                return
+            }
+            let finalMoment = tomorrow.addingTimeInterval(-1)
+            self.finalizeMetricsDay(endingAt: finalMoment)
+            self.refreshDeviceMetrics(date: Date())
+            self.scheduleMidnightFinalization()
+        }
+        midnightFinalization = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+
+    private func finalizePreviousDayIfNeeded() {
+        let calendar = Calendar.current
+        guard let yesterday = calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: Date())) else { return }
+        let day = Self.dayString(yesterday)
+        guard UserDefaults.standard.string(forKey: finalizedDayKey) != day else { return }
+        finalizeMetricsDay(endingAt: yesterday.addingTimeInterval(24 * 3600 - 1))
+    }
+
+    private func finalizeMetricsDay(endingAt date: Date) {
+        guard let store else { return }
+        let day = Self.dayString(date)
+        Task { @MainActor in
+            do {
+                let snapshot = try await IOSWhoopDeviceMetrics.refresh(
+                    store: store,
+                    deviceId: self.deviceId,
+                    now: date
+                )
+                await self.persistMetricSnapshot(snapshot, for: date, final: true)
+                UserDefaults.standard.set(day, forKey: self.finalizedDayKey)
+            } catch {
+                self.append("Final metrics failed for \(day): \(error.localizedDescription)")
+            }
+        }
     }
 
     private func ackHistoricalChunk(trim: UInt32, endData: [UInt8]) {
@@ -381,7 +548,11 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
                 }
             }
             backfillDraining = false
-            refreshDeviceMetrics()
+            if appIsActive {
+                refreshDeviceMetrics()
+            } else {
+                metricsRefreshDeferredWhileInactive = true
+            }
         }
     }
 
@@ -401,7 +572,11 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         backfillTimeout = nil
         backfilling = false
         append("Historical sync \(reason)")
-        refreshDeviceMetrics()
+        if appIsActive {
+            refreshDeviceMetrics()
+        } else {
+            metricsRefreshDeferredWhileInactive = true
+        }
     }
 
     private func handleHeartRateMeasurement(_ data: Data) {
@@ -441,6 +616,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         guard bpm >= 30, bpm <= 220 else { return }
         let sampleDate = Date(timeIntervalSince1970: TimeInterval(ts))
         guard Calendar.current.isDateInToday(sampleDate) else { return }
+        mergeDailyHeartRateSample(bpm: bpm, ts: ts, into: &metrics)
         if let lastLiveChartMergeAt,
            sampleDate.timeIntervalSince(lastLiveChartMergeAt) < 5 {
             return
@@ -471,12 +647,24 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         guard bpm >= 30, bpm <= 220 else { return }
         let sampleDate = Date(timeIntervalSince1970: TimeInterval(ts))
         guard Calendar.current.isDateInToday(sampleDate) else { return }
+        mergeDailyHeartRateSample(bpm: bpm, ts: ts, into: &snapshot)
         if snapshot.todayHRSamples.last?.ts != ts {
             let nextId = (snapshot.todayHRSamples.last?.id ?? -1) + 1
             snapshot.todayHRSamples.append(IOSMetricHRSample(id: nextId, ts: ts, bpm: bpm))
         }
         snapshot.latestSampleAt = max(snapshot.latestSampleAt ?? sampleDate, sampleDate)
         snapshot.status = statusForLiveSample(sampleDate)
+    }
+
+    private func mergeDailyHeartRateSample(bpm: Int, ts: Int, into snapshot: inout IOSWhoopDeviceSnapshot) {
+        if snapshot.dailyHRSamples.last?.ts == ts {
+            return
+        }
+        let nextId = (snapshot.dailyHRSamples.last?.id ?? -1) + 1
+        snapshot.dailyHRSamples.append(IOSMetricHRSample(id: nextId, ts: ts, bpm: bpm))
+        if snapshot.dailyHRSamples.count > 120_000 {
+            snapshot.dailyHRSamples.removeFirst(snapshot.dailyHRSamples.count - 120_000)
+        }
     }
 
     private func statusForLiveSample(_ date: Date) -> String {
@@ -645,7 +833,11 @@ extension IOSWhoopScanner: @preconcurrency CBCentralManagerDelegate {
         Task { @MainActor in
             await collector?.flushStandardHR()
             await collector?.flush()
-            refreshDeviceMetrics()
+            if appIsActive {
+                refreshDeviceMetrics()
+            } else {
+                metricsRefreshDeferredWhileInactive = true
+            }
         }
         append("Disconnected\(error.map { ": \($0.localizedDescription)" } ?? "")")
     }

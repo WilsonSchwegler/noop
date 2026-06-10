@@ -96,6 +96,7 @@ struct TodayIOSView: View {
     @EnvironmentObject private var scanner: IOSWhoopScanner
     @EnvironmentObject private var health: IOSHealthStore
     @EnvironmentObject private var recorder: IOSWorkoutRecorder
+    @EnvironmentObject private var pedometer: IOSPedometerStore
     @State private var selectedDate = Date()
     @State private var calendarMonth = Date()
     @State private var showingCalendar = false
@@ -111,6 +112,9 @@ struct TodayIOSView: View {
                     calendarMonth = selectedDate
                     showingCalendar = true
                     loadRecoveryScores(for: selectedDate)
+                }
+                if scanner.isRefreshingMetrics {
+                    MetricsRefreshBanner()
                 }
                 HStack(spacing: 10) {
                     NavigationLink {
@@ -151,7 +155,7 @@ struct TodayIOSView: View {
                         ScoreCard(title: "Sleep", value: String(format: "%.1f", effectiveSleepHours), unit: "h", color: StrandPalette.metricCyan)
                     }
                     .buttonStyle(.plain)
-                    ScoreCard(title: "Steps", value: "\(scanner.metrics.steps)", unit: "", color: StrandPalette.strain066)
+                    ScoreCard(title: "Steps", value: "\(displaySteps)", unit: "", color: StrandPalette.strain066)
                 }
                 if let calories = scanner.metrics.calories, calories > 0 {
                     ScoreCard(title: "Calories", value: "\(Int(calories.rounded()))", unit: "kcal", color: StrandPalette.metricAmber)
@@ -189,7 +193,8 @@ struct TodayIOSView: View {
         }
         .scrollContentBackground(.hidden)
         .refreshable {
-            scanner.refreshDeviceMetrics(date: selectedDate)
+            await scanner.refreshDeviceMetricsNow(date: selectedDate)
+            pedometer.refresh(date: selectedDate)
         }
         .onAppear {
             scanner.refreshDeviceMetrics(date: selectedDate)
@@ -216,41 +221,65 @@ struct TodayIOSView: View {
     }
 
     private var effectiveDailyStrain: Double? {
-        let workoutStrains = supplementalWorkoutStrains(for: workoutsForSelectedDate)
-        let allStrains = [scanner.metrics.strain].compactMap { $0 } + workoutStrains
-        return IOSStrainEstimator.combine(allStrains)
+        let computed = IOSStrainEstimator.awakeDayStrain(metricSamples: awakeDayHRSamples)
+        let bestWorkout = workoutsForSelectedDate.compactMap(\.effectiveStrain).max()
+        return [computed, scanner.metrics.strain, bestWorkout]
+            .compactMap { $0 }
+            .max()
     }
 
     private var effectiveRecoveryScore: Double? {
         scanner.metrics.recovery
     }
 
+    private var displaySteps: Int {
+        if scanner.metrics.stepsSource == "WHOOP steps" {
+            return scanner.metrics.steps
+        }
+        return pedometer.todaySteps ?? scanner.metrics.steps
+    }
+
     private var recoveryAdjustedLoad: Double? {
         IOSStrainEstimator.recoveryAdjustedLoad(strain: effectiveDailyStrain, recovery: effectiveRecoveryScore)
     }
 
-    private func supplementalWorkoutStrains(for workouts: [IOSLoggedWorkout]) -> [Double] {
-        workouts
-            .filter { !deviceHeartRateCovers($0) }
-            .compactMap(\.effectiveStrain)
+    private var awakeDayHRSamples: [IOSMetricHRSample] {
+        let sleepIntervals = NOOPSleepDisplay.intervals(
+            health: health.sleepIntervals,
+            whoop: scanner.metrics.whoopSleepIntervals
+        )
+        let selectedDayStart = Int(Calendar.current.startOfDay(for: selectedDate).timeIntervalSince1970)
+        let morningCutoff = selectedDayStart + 14 * 3600
+        let wakeTs = sleepIntervals
+            .filter { $0.stage != "Awake" }
+            .filter {
+                let end = Int($0.end.timeIntervalSince1970)
+                return end >= selectedDayStart && end <= morningCutoff
+            }
+            .map { Int($0.end.timeIntervalSince1970) }
+            .max()
+        let startTs = max(selectedDayStart, wakeTs ?? selectedDayStart)
+        var byTs: [Int: Int] = [:]
+        for sample in dailyCalculationSamples where sample.ts >= startTs {
+            byTs[sample.ts] = sample.bpm
+        }
+        for workout in workoutsForSelectedDate {
+            for sample in workout.hrSamples where sample.ts >= startTs {
+                byTs[sample.ts] = sample.bpm
+            }
+        }
+        if let active = recorder.active, Calendar.current.isDate(active.startedAt, inSameDayAs: selectedDate) {
+            for sample in active.hrSamples where sample.ts >= startTs {
+                byTs[sample.ts] = sample.bpm
+            }
+        }
+        return byTs.keys.sorted().enumerated().map { index, ts in
+            IOSMetricHRSample(id: index, ts: ts, bpm: byTs[ts] ?? 0)
+        }
     }
 
-    private func deviceHeartRateCovers(_ workout: IOSLoggedWorkout) -> Bool {
-        guard scanner.metrics.strain != nil else { return false }
-        let start = Int(workout.startedAt.timeIntervalSince1970)
-        let end = Int(workout.endedAt.timeIntervalSince1970)
-        guard end > start else { return false }
-
-        let samples = scanner.metrics.todayHRSamples
-            .filter { $0.ts >= start && $0.ts <= end }
-            .sorted { $0.ts < $1.ts }
-        guard samples.count >= 2 else { return false }
-
-        let coveredSeconds = zip(samples, samples.dropFirst()).reduce(0) { total, pair in
-            total + max(0, min(60, pair.1.ts - pair.0.ts))
-        }
-        let duration = max(1, end - start)
-        return Double(coveredSeconds) / Double(duration) >= 0.50
+    private var dailyCalculationSamples: [IOSMetricHRSample] {
+        scanner.metrics.dailyHRSamples.isEmpty ? scanner.metrics.todayHRSamples : scanner.metrics.dailyHRSamples
     }
 
     private var heartRateIntervals: [HRChartInterval] {
@@ -327,6 +356,7 @@ private struct LiveIOSView: View {
             .padding(.bottom, 96)
         }
         .scrollContentBackground(.hidden)
+        .refreshable { await scanner.refreshDeviceMetricsNow() }
     }
 }
 
@@ -350,7 +380,7 @@ private struct ActivityIOSView: View {
             .padding(.bottom, 96)
         }
         .scrollDismissesKeyboard(.interactively)
-        .refreshable { scanner.refreshDeviceMetrics() }
+        .refreshable { await scanner.refreshDeviceMetricsNow() }
     }
 }
 
@@ -431,7 +461,7 @@ private struct WorkoutsIOSView: View {
             .padding(16)
             .padding(.bottom, 96)
         }
-        .refreshable { scanner.refreshDeviceMetrics() }
+        .refreshable { await scanner.refreshDeviceMetricsNow() }
         .sheet(isPresented: $showingPlanEditor) {
             WorkoutPlanEditorView()
                 .environmentObject(recorder)
@@ -1281,7 +1311,7 @@ private struct SleepIOSView: View {
             .padding(.bottom, 96)
         }
         .refreshable {
-            scanner.refreshDeviceMetrics()
+            await scanner.refreshDeviceMetricsNow()
         }
     }
 
@@ -1397,7 +1427,7 @@ private struct MoreIOSView: View {
                 .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
                 Toggle("Background Bluetooth", isOn: $backgroundBLE)
                 ActionButton(title: "Refresh WHOOP Metrics", icon: "externaldrive.fill", color: StrandPalette.accent) {
-                    scanner.refreshDeviceMetrics()
+                    Task { await scanner.refreshDeviceMetricsNow() }
                 }
                 SourceRow(name: "WHOOP Wrist", status: "Set to \(wristSide.capitalized). Motion is handled from WHOOP gravity magnitude.", icon: "hand.raised.fill", color: StrandPalette.metricPurple)
                 SourceRow(name: "Data Sources", status: "Recovery, strain, sleep, steps, workouts, HRV, RHR, respiration, raw SpO2, and skin-temp use WHOOP data stored locally.", icon: "lock.shield.fill", color: StrandPalette.accent)
@@ -1405,6 +1435,7 @@ private struct MoreIOSView: View {
             .padding(16)
             .padding(.bottom, 96)
         }
+        .refreshable { await scanner.refreshDeviceMetricsNow() }
     }
 }
 
@@ -1501,6 +1532,29 @@ private struct DayPickerHeader: View {
         if Calendar.current.isDateInToday(selectedDate) { return "Today" }
         if Calendar.current.isDateInYesterday(selectedDate) { return "Yesterday" }
         return selectedDate.formatted(date: .abbreviated, time: .omitted)
+    }
+}
+
+private struct MetricsRefreshBanner: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .tint(StrandPalette.accent)
+                .scaleEffect(0.86)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Updating metrics")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(StrandPalette.textPrimary)
+                Text("Raw WHOOP samples are being summarized now.")
+                    .font(.caption)
+                    .foregroundStyle(StrandPalette.textSecondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(StrandPalette.surfaceRaised, in: Capsule())
+        .overlay { Capsule().stroke(StrandPalette.hairline, lineWidth: 1) }
     }
 }
 
@@ -1914,6 +1968,7 @@ private struct HospitalHRChart: View {
     let samples: [IOSMetricHRSample]
     var intervals: [HRChartInterval] = []
     var compactPreview = true
+    var visibleWindowHoursOverride: Int? = nil
 
     var body: some View {
         InteractiveHRChart(
@@ -1921,7 +1976,7 @@ private struct HospitalHRChart: View {
             emptyText: "Waiting for WHOOP HR",
             intervals: intervals,
             averagePerMinute: true,
-            visibleWindowHours: compactPreview ? 12 : nil,
+            visibleWindowHours: visibleWindowHoursOverride ?? (compactPreview ? 12 : nil),
             allowsSelection: !compactPreview
         )
     }
@@ -2225,16 +2280,59 @@ private struct HRIntervalLegend: View {
     }
 }
 
+private struct HRZoomControl: View {
+    @Binding var visibleHours: Int?
+
+    private let options: [(label: String, hours: Int?)] = [
+        ("All", nil),
+        ("12h", 12),
+        ("6h", 6),
+        ("3h", 3),
+        ("1h", 1),
+    ]
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(options, id: \.label) { option in
+                Button {
+                    visibleHours = option.hours
+                    clearNOOPChartSelection()
+                } label: {
+                    Text(option.label)
+                        .font(.caption.weight(.bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .foregroundStyle(visibleHours == option.hours ? .black : StrandPalette.textSecondary)
+                        .background(
+                            visibleHours == option.hours ? StrandPalette.accent : StrandPalette.surfaceInset,
+                            in: RoundedRectangle(cornerRadius: 8)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
 private struct HeartRateDayView: View {
     @EnvironmentObject private var scanner: IOSWhoopScanner
     let samples: [IOSMetricHRSample]
     let intervals: [HRChartInterval]
+    @State private var visibleHours: Int?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                HospitalHRChart(samples: samples, intervals: intervals, compactPreview: false)
+                HospitalHRChart(
+                    samples: samples,
+                    intervals: intervals,
+                    compactPreview: false,
+                    visibleWindowHoursOverride: visibleHours
+                )
                     .frame(height: 240)
+                HRZoomControl(visibleHours: $visibleHours)
                 HRIntervalLegend(intervals: intervals)
                 HStack(spacing: 10) {
                     ScoreCard(title: "Average", value: average.map { "\($0)" } ?? "--", unit: "bpm", color: StrandPalette.metricCyan)
@@ -2297,6 +2395,7 @@ private struct RecoveryExplanationView: View {
 private struct StrainExplanationView: View {
     @EnvironmentObject private var scanner: IOSWhoopScanner
     @EnvironmentObject private var recorder: IOSWorkoutRecorder
+    @EnvironmentObject private var health: IOSHealthStore
 
     var body: some View {
         let rawStrain = effectiveDailyStrain
@@ -2309,12 +2408,28 @@ private struct StrainExplanationView: View {
                     color: rawStrain == nil ? StrandPalette.textTertiary : StrandPalette.metricCyan
                 )
                 ExplanationBlock(
-                    title: "How strain is calculated",
-                    text: "Strain is based on WHOOP heart-rate load while you are awake. The app converts time in heart-rate reserve zones into TRIMP load, then maps that load onto a 0-21 logarithmic strain scale. Sleep intervals are removed before daily strain is calculated."
+                    title: "Daily strain stream",
+                    text: "The Today strain circle is calculated from the WHOOP heart-rate samples collected after your main overnight sleep ends. NOOP builds one awake-day stream from stored WHOOP samples, live WHOOP samples, active workout samples, and saved workout samples for today. Samples with the same timestamp are merged so a workout is not double-counted. Sleep intervals are used only to find the wake-up point, then sleep time is excluded from daily strain."
+                )
+                ExplanationBlock(
+                    title: "Workout strain stream",
+                    text: "When you start a workout, NOOP also opens a separate workout stream. That workout strain is isolated to the workout start and finish time, so it only describes that session. The daily strain circle is different: it uses the full awake-day stream, so the workout period is naturally included along with the heart-rate load from before and after the workout."
+                )
+                ExplanationBlock(
+                    title: "Heart-rate load",
+                    text: "NOOP converts each heart-rate interval into heart-rate reserve load. Heart-rate reserve compares your current BPM with an estimated resting heart rate and estimated max heart rate, so 130 BPM is treated differently depending on how hard that is relative to your range. For higher-intensity periods, NOOP uses Edwards-style heart-rate-zone TRIMP weighting. For lighter awake activity below the Edwards zones, it uses a Banister-style continuous TRIMP curve so walking, chores, and easy movement can add small amounts of strain instead of being ignored."
+                )
+                ExplanationBlock(
+                    title: "0-21 score",
+                    text: "After the app sums TRIMP load across the day, it maps that load onto a 0-21 logarithmic strain scale. The logarithmic shape matters: early movement raises strain quickly, but each additional point requires more work than the last. This is why going from 1 to 3 is much easier than going from 12 to 14."
+                )
+                ExplanationBlock(
+                    title: "Display fallback",
+                    text: "For the Today card, NOOP shows the highest trustworthy value available: the computed awake-day strain, any stored device-derived daily strain, or the highest saved workout strain. That guardrail prevents the daily circle from showing less than a workout it contains. If daily strain exactly matches a workout, it usually means the non-workout heart-rate load was low, the daily WHOOP stream is still catching up, or the workout is currently the strongest complete strain value available."
                 )
                 ExplanationBlock(
                     title: "Adjusted load",
-                    text: "Adjusted load keeps raw strain unchanged, then estimates how costly that load is today using your recovery score. Green recovery leaves it unchanged; yellow and red recovery reduce estimated capacity, so the same raw strain shows as a higher adjusted load."
+                    text: "Raw strain stays blue and always represents the actual HR-load score. The purple adjusted-load number estimates how costly that same strain is today after considering recovery. When recovery is high, adjusted load stays close to raw strain. When recovery is low, the app treats your available capacity as lower, so the same workout or daily load is shown as more expensive."
                 )
                 HStack(spacing: 10) {
                     ScoreCard(title: "Raw", value: rawStrain.map { String(format: "%.1f", $0) } ?? "--", unit: "/21", color: StrandPalette.metricCyan)
@@ -2333,28 +2448,50 @@ private struct StrainExplanationView: View {
     }
 
     private var effectiveDailyStrain: Double? {
-        let workoutStrains = workoutsForToday
-            .filter { !deviceHeartRateCovers($0) }
-            .compactMap(\.effectiveStrain)
-        let allStrains = [scanner.metrics.strain].compactMap { $0 } + workoutStrains
-        return IOSStrainEstimator.combine(allStrains)
+        let computed = IOSStrainEstimator.awakeDayStrain(metricSamples: awakeDayHRSamples)
+        let bestWorkout = workoutsForToday.compactMap(\.effectiveStrain).max()
+        return [computed, scanner.metrics.strain, bestWorkout]
+            .compactMap { $0 }
+            .max()
     }
 
-    private func deviceHeartRateCovers(_ workout: IOSLoggedWorkout) -> Bool {
-        guard scanner.metrics.strain != nil else { return false }
-        let start = Int(workout.startedAt.timeIntervalSince1970)
-        let end = Int(workout.endedAt.timeIntervalSince1970)
-        guard end > start else { return false }
-
-        let samples = scanner.metrics.todayHRSamples
-            .filter { $0.ts >= start && $0.ts <= end }
-            .sorted { $0.ts < $1.ts }
-        guard samples.count >= 2 else { return false }
-
-        let coveredSeconds = zip(samples, samples.dropFirst()).reduce(0) { total, pair in
-            total + max(0, min(60, pair.1.ts - pair.0.ts))
+    private var awakeDayHRSamples: [IOSMetricHRSample] {
+        let sleepIntervals = NOOPSleepDisplay.intervals(
+            health: health.sleepIntervals,
+            whoop: scanner.metrics.whoopSleepIntervals
+        )
+        let selectedDayStart = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
+        let morningCutoff = selectedDayStart + 14 * 3600
+        let wakeTs = sleepIntervals
+            .filter { $0.stage != "Awake" }
+            .filter {
+                let end = Int($0.end.timeIntervalSince1970)
+                return end >= selectedDayStart && end <= morningCutoff
+            }
+            .map { Int($0.end.timeIntervalSince1970) }
+            .max()
+        let startTs = max(selectedDayStart, wakeTs ?? selectedDayStart)
+        var byTs: [Int: Int] = [:]
+        for sample in dailyCalculationSamples where sample.ts >= startTs {
+            byTs[sample.ts] = sample.bpm
         }
-        return Double(coveredSeconds) / Double(max(1, end - start)) >= 0.50
+        for workout in workoutsForToday {
+            for sample in workout.hrSamples where sample.ts >= startTs {
+                byTs[sample.ts] = sample.bpm
+            }
+        }
+        if let active = recorder.active, Calendar.current.isDateInToday(active.startedAt) {
+            for sample in active.hrSamples where sample.ts >= startTs {
+                byTs[sample.ts] = sample.bpm
+            }
+        }
+        return byTs.keys.sorted().enumerated().map { index, ts in
+            IOSMetricHRSample(id: index, ts: ts, bpm: byTs[ts] ?? 0)
+        }
+    }
+
+    private var dailyCalculationSamples: [IOSMetricHRSample] {
+        scanner.metrics.dailyHRSamples.isEmpty ? scanner.metrics.todayHRSamples : scanner.metrics.dailyHRSamples
     }
 }
 

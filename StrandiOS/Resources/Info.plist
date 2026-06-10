@@ -27,9 +27,11 @@
 	<key>NSHealthShareUsageDescription</key>
 	<string>NOOP reads Apple Health sleep analysis on-device to calculate a sleep score. Recovery, strain, activity, workouts, HRV, and resting heart rate come from your WHOOP strap.</string>
 	<key>NSHealthUpdateUsageDescription</key>
-	<string>NOOP can export WHOOP heart rate, HRV, respiratory rate, detected sleep stages, workouts, and active energy to Apple Health for on-device sleep and recovery analysis.</string>
+	<string>NOOP can export WHOOP heart rate, HRV, detected sleep stages, workouts, and active energy to Apple Health when you explicitly request it.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>NOOP uses your location during outdoor runs and hikes to record your route, distance, and pace.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>NOOP uses iPhone motion step counts only when WHOOP step data is not available, so the Today steps card is not based on a weak motion estimate.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>

@@ -55,6 +55,7 @@ struct IOSWhoopDeviceSnapshot: Equatable {
     var activityPoints = 0
     var workouts: [IOSDeviceWorkout] = []
     var todayHRSamples: [IOSMetricHRSample] = []
+    var dailyHRSamples: [IOSMetricHRSample] = []
     var loadGuidance = IOSLoadGuidance()
 
     static let empty = IOSWhoopDeviceSnapshot()
@@ -188,6 +189,7 @@ enum IOSWhoopDeviceMetrics {
         snapshot.todayHRSamples = todayHR.enumerated().map { index, sample in
             IOSMetricHRSample(id: index, ts: sample.ts, bpm: sample.bpm)
         }
+        snapshot.dailyHRSamples = snapshot.todayHRSamples
         snapshot.loadGuidance = guidance
         return snapshot
     }
