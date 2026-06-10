@@ -197,7 +197,6 @@ struct TodayIOSView: View {
             pedometer.refresh(date: selectedDate)
         }
         .onAppear {
-            scanner.refreshDeviceMetrics(date: selectedDate)
             loadRecoveryScores(for: selectedDate)
         }
         .onChange(of: selectedDate) { date in
