@@ -62,7 +62,7 @@ struct IOSWhoopDeviceSnapshot: Equatable {
 }
 
 enum IOSWhoopDeviceMetrics {
-    static let dailyLogVersion = 7
+    static let dailyLogVersion = 8
 
     static func loggedDaySnapshot(store: WhoopStore,
                                   deviceId: String,
@@ -426,15 +426,18 @@ enum IOSWhoopDeviceMetrics {
                 session.start >= overnightStart &&
                 session.end <= nowTs + 2 * 3600
         }
-        let stagedSummary: (hours: Double, efficiency: Double, stages: [IOSSleepStageSummary], intervals: [IOSSleepInterval], status: String) = selectedSessions.isEmpty
-            ? (hours: 0, efficiency: 0, stages: [], intervals: [], status: "No WHOOP staged sleep ending on this day")
-            : sleepSummary(from: mergedOvernightSegments(from: selectedSessions), status: "WHOOP staged sleep from HR/R-R/motion")
-        let hrSummary = estimatedOvernightSleepSummary(hr: hr, rr: rr, selectedDayStart: selectedDayStart, nowTs: nowTs)
-        return hrSummary.hours > stagedSummary.hours ? hrSummary : stagedSummary
+        let stagedSegments = primaryOvernightSegments(from: selectedSessions)
+        if !stagedSegments.isEmpty {
+            return sleepSummary(from: stagedSegments, status: "WHOOP staged sleep from HR/R-R/motion")
+        }
+
+        return estimatedOvernightSleepSummary(hr: hr, rr: rr, selectedDayStart: selectedDayStart, nowTs: nowTs)
     }
 
     private static func sleepSummary(from segments: [StageSegment],
                                      status: String) -> (hours: Double, efficiency: Double, stages: [IOSSleepStageSummary], intervals: [IOSSleepInterval], status: String) {
+        let segments = sleepCoreSegments(segments)
+        guard !segments.isEmpty else { return (0, 0, [], [], "No sleep epochs inside detected overnight window") }
         var awake = 0.0
         var core = 0.0
         var deep = 0.0
@@ -443,7 +446,7 @@ enum IOSWhoopDeviceMetrics {
             guard segment.end > segment.start else { return nil }
             let hours = Double(segment.end - segment.start) / 3600.0
             let label: String
-            switch segment.stage {
+            switch segment.stage.lowercased() {
             case "wake":
                 awake += hours
                 label = "Awake"
@@ -476,22 +479,68 @@ enum IOSWhoopDeviceMetrics {
         return (hours, efficiency, stages, intervals.sorted { $0.start < $1.start }, status)
     }
 
-    private static func mergedOvernightSegments(from sessions: [SleepSession]) -> [StageSegment] {
-        let ordered = sessions.sorted { $0.start < $1.start }
-        guard var previous = ordered.first else { return [] }
-        var segments = previous.stages
-
-        for session in ordered.dropFirst() {
-            if session.start > previous.end {
-                segments.append(StageSegment(start: previous.end, end: session.start, stage: "wake"))
+    private static func primaryOvernightSegments(from sessions: [SleepSession]) -> [StageSegment] {
+        let candidates = sessions
+            .map { session in
+                (session: session, segments: sleepCoreSegments(session.stages))
             }
-            segments.append(contentsOf: session.stages)
-            previous = session
+            .filter { !$0.segments.isEmpty }
+        guard let primary = candidates.max(by: { asleepSeconds(in: $0.segments) < asleepSeconds(in: $1.segments) }) else {
+            return []
         }
 
-        return segments
+        let primaryStart = primary.segments.first?.start ?? primary.session.start
+        let primaryEnd = primary.segments.last?.end ?? primary.session.end
+        let maxFragmentGap = 90 * 60
+        let nearby = candidates
+            .filter { candidate in
+                let start = candidate.segments.first?.start ?? candidate.session.start
+                let end = candidate.segments.last?.end ?? candidate.session.end
+                return start <= primaryEnd + maxFragmentGap && end >= primaryStart - maxFragmentGap
+            }
+            .sorted { ($0.segments.first?.start ?? $0.session.start) < ($1.segments.first?.start ?? $1.session.start) }
+
+        var merged: [StageSegment] = []
+        var previousEnd: Int?
+        for candidate in nearby {
+            guard let start = candidate.segments.first?.start,
+                  let end = candidate.segments.last?.end,
+                  end > start else { continue }
+            if let previousEnd, start > previousEnd, start - previousEnd <= maxFragmentGap {
+                merged.append(StageSegment(start: previousEnd, end: start, stage: "wake"))
+            }
+            merged.append(contentsOf: candidate.segments)
+            previousEnd = max(previousEnd ?? end, end)
+        }
+
+        return sleepCoreSegments(merged)
+    }
+
+    private static func sleepCoreSegments(_ segments: [StageSegment]) -> [StageSegment] {
+        let sorted = segments
             .filter { $0.end > $0.start }
             .sorted { $0.start < $1.start }
+        guard let firstSleep = sorted.firstIndex(where: { !isWakeStage($0.stage) }),
+              let lastSleep = sorted.lastIndex(where: { !isWakeStage($0.stage) }) else { return [] }
+        let start = sorted[firstSleep].start
+        let end = sorted[lastSleep].end
+        return sorted.compactMap { segment in
+            let clippedStart = max(segment.start, start)
+            let clippedEnd = min(segment.end, end)
+            guard clippedEnd > clippedStart else { return nil }
+            return StageSegment(start: clippedStart, end: clippedEnd, stage: segment.stage)
+        }
+    }
+
+    private static func isWakeStage(_ stage: String) -> Bool {
+        let normalized = stage.lowercased()
+        return normalized == "wake" || normalized == "awake"
+    }
+
+    private static func asleepSeconds(in segments: [StageSegment]) -> Int {
+        segments
+            .filter { !isWakeStage($0.stage) && $0.end > $0.start }
+            .reduce(0) { $0 + $1.end - $1.start }
     }
 
     private static func estimatedOvernightSleepSummary(hr: [HRSample],
@@ -506,16 +555,15 @@ enum IOSWhoopDeviceMetrics {
         let calendar = Calendar.current
         let nightRows = rows.filter { sample in
             let hour = calendar.component(.hour, from: Date(timeIntervalSince1970: TimeInterval(sample.ts)))
-            return (hour >= 20 || hour <= 12) &&
+            return (hour >= 20 || hour <= 11) &&
                 sample.ts >= selectedDayStart - 8 * 3600 &&
-                sample.ts <= selectedDayStart + 14 * 3600
+                sample.ts <= selectedDayStart + 12 * 3600
         }
         guard nightRows.count >= 6 else { return (0, 0, [], [], "Only \(nightRows.count) night HR samples available") }
 
-        let broadSummary = broadOvernightSummary(from: nightRows, rr: rr, selectedDayStart: selectedDayStart)
         let sortedBPM = nightRows.map(\.bpm).sorted()
-        let lowIndex = max(0, min(sortedBPM.count - 1, Int(Double(sortedBPM.count - 1) * 0.45)))
-        let threshold = min(85, max(55, sortedBPM[lowIndex] + 8))
+        let lowIndex = max(0, min(sortedBPM.count - 1, Int(Double(sortedBPM.count - 1) * 0.40)))
+        let threshold = min(82, max(52, sortedBPM[lowIndex] + 6))
         let buckets = Dictionary(grouping: nightRows) { $0.ts / 300 }
             .map { bucket, samples in
                 let avg = Double(samples.reduce(0) { $0 + $1.bpm }) / Double(samples.count)
@@ -529,7 +577,7 @@ enum IOSWhoopDeviceMetrics {
         for bucket in buckets {
             let isSleepLike = bucket.avg <= Double(threshold)
             if isSleepLike {
-                if let run = current, bucket.start - run.end <= 45 * 60 {
+                if let run = current, bucket.start - run.end <= 30 * 60 {
                     current = (run.start, bucket.end)
                 } else {
                     current = (bucket.start, bucket.end)
@@ -545,10 +593,12 @@ enum IOSWhoopDeviceMetrics {
             best = run
         }
 
-        guard var run = best else { return broadSummary }
+        guard var run = best, run.end - run.start >= 60 * 60 else {
+            return (0, 0, [], [], "No HR-only sleep run found without motion-confirmed sleep")
+        }
         guard run.end >= selectedDayStart,
-              run.end <= selectedDayStart + 14 * 3600 else {
-            return broadSummary
+              run.end <= selectedDayStart + 12 * 3600 else {
+            return (0, 0, [], [], "No HR-only sleep ending on this wake day")
         }
 
         run.start = max(run.start, nightRows.first?.ts ?? run.start)
@@ -568,43 +618,7 @@ enum IOSWhoopDeviceMetrics {
             intervals,
             "Estimated from low overnight WHOOP HR (\(nightRows.count) HR samples)"
         )
-        return broadSummary.hours > lowHRSummary.0 ? broadSummary : lowHRSummary
-    }
-
-    private static func broadOvernightSummary(from rows: [HRSample],
-                                              rr: [RRInterval],
-                                              selectedDayStart: Int) -> (hours: Double, efficiency: Double, stages: [IOSSleepStageSummary], intervals: [IOSSleepInterval], status: String) {
-        let calendar = Calendar.current
-        let sleepRows = rows.filter { sample in
-            let hour = calendar.component(.hour, from: Date(timeIntervalSince1970: TimeInterval(sample.ts)))
-            return (hour >= 21 || hour <= 12) &&
-                sample.ts >= selectedDayStart - 8 * 3600 &&
-                sample.ts <= selectedDayStart + 14 * 3600
-        }
-        let run = longestContinuousRun(in: sleepRows, maxGapSeconds: 2 * 3600)
-        guard let run else {
-            let count = sleepRows.count
-            return (0, 0, [], [], "Found \(count) overnight HR samples, but no continuous sleep window")
-        }
-        guard run.end >= selectedDayStart,
-              run.end <= selectedDayStart + 14 * 3600 else {
-            return (0, 0, [], [], "No sleep ending on this day")
-        }
-        let intervals = stageEstimatedSleep(
-            start: run.start,
-            end: run.end,
-            hr: sleepRows,
-            rr: rr,
-            fallbackStage: "Core"
-        )
-        let summary = summarize(intervals: intervals)
-        return (
-            summary.hours,
-            0.80,
-            summary.stages,
-            intervals,
-            "Estimated from continuous overnight WHOOP HR (\(sleepRows.count) HR samples)"
-        )
+        return lowHRSummary
     }
 
     private static func stageEstimatedSleep(start: Int,
@@ -727,27 +741,6 @@ enum IOSWhoopDeviceMetrics {
                 IOSSleepStageSummary(name: "Awake", hours: awake),
             ].filter { $0.hours > 0.01 }
         )
-    }
-
-    private static func longestContinuousRun(in rows: [HRSample], maxGapSeconds: Int) -> (start: Int, end: Int)? {
-        let sorted = rows.sorted { $0.ts < $1.ts }
-        guard let first = sorted.first else { return nil }
-        var current = (start: first.ts, end: first.ts)
-        var best = current
-        for sample in sorted.dropFirst() {
-            if sample.ts - current.end <= maxGapSeconds {
-                current.end = sample.ts
-            } else {
-                if current.end - current.start > best.end - best.start {
-                    best = current
-                }
-                current = (sample.ts, sample.ts)
-            }
-        }
-        if current.end - current.start > best.end - best.start {
-            best = current
-        }
-        return best.end > best.start ? best : nil
     }
 
     private static func dayString(_ date: Date, calendar: Calendar) -> String {
