@@ -4,9 +4,16 @@ import WhoopProtocol
 
 enum IOSStrainEstimator {
     /// ACSM/Norton intensity terminology places light effort around 30% HRR
-    /// and moderate effort around 40% HRR. Daily strain should count real
-    /// awake load, not normal HR drift while sitting still.
+    /// and moderate effort around 40% HRR. Daily strain combines a very small
+    /// quiet-awake load with HRR/TRIMP load once HR rises into light intensity.
     private static let dailyLightIntensityFloorHRR = 0.30
+    private static let dailyModerateIntensityFloorHRR = 0.40
+
+    /// Compendium MET anchors: sleep is slightly below 1 MET, quiet wakefulness
+    /// is about 1 MET, and moderate activity starts around 3 METs.
+    private static let sleepingMET = 0.95
+    private static let quietAwakeMET = 1.0
+    private static let moderateActivityMET = 3.0
 
     static func combine(_ strains: [Double]) -> Double? {
         let valid = strains.filter { $0 > 0 }
@@ -119,16 +126,25 @@ enum IOSStrainEstimator {
             let current = sorted[index]
             let next = sorted[index + 1]
             let seconds = max(1, min(60, next.ts - current.ts))
+            let minutes = Double(seconds) / 60.0
+            trimp += minutes * quietAwakeTRIMPPerMinute
             let x = max(0, min(1, (Double(current.bpm) - restingHR) / reserve))
             guard x >= dailyLightIntensityFloorHRR else { continue }
             let edwards = Double(edwardsWeight(for: x))
             let dailyX = (x - dailyLightIntensityFloorHRR) / (1.0 - dailyLightIntensityFloorHRR)
             let banister = dailyX * StrainScorer.banisterScale * exp(StrainScorer.banisterBMen * dailyX)
-            trimp += (Double(seconds) / 60.0) * max(edwards, banister)
+            trimp += minutes * max(edwards, banister)
         }
 
         guard trimp.isFinite else { return nil }
         return StrainScorer.trimpToStrain(trimp)
+    }
+
+    private static var quietAwakeTRIMPPerMinute: Double {
+        let moderateX = (dailyModerateIntensityFloorHRR - dailyLightIntensityFloorHRR) / (1.0 - dailyLightIntensityFloorHRR)
+        let moderateLoad = moderateX * StrainScorer.banisterScale * exp(StrainScorer.banisterBMen * moderateX)
+        let metFraction = (quietAwakeMET - sleepingMET) / (moderateActivityMET - sleepingMET)
+        return max(0, moderateLoad * metFraction)
     }
 
     private static func edwardsWeight(for pctHRR: Double) -> Int {

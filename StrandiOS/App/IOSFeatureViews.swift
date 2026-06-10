@@ -2864,11 +2864,11 @@ private struct StrainExplanationView: View {
                 )
                 ExplanationBlock(
                     title: "Heart-rate load",
-                    text: "NOOP converts each WHOOP heart-rate interval into heart-rate reserve load. Heart-rate reserve compares your current BPM with estimated resting and max heart rate, so the same BPM can mean different stress depending on your range. For daily strain, normal background HR drift is ignored until it reaches the light-intensity range. Above that floor, lower-intensity movement uses a Banister-style TRIMP curve, while time at higher intensities uses Edwards-style heart-rate-zone TRIMP."
+                    text: "NOOP now uses two layers for daily strain. First, every awake interval gets a small quiet-awake load based on MET research: being awake costs more energy than sleeping, but far less than moderate exercise. Second, WHOOP heart-rate data adds extra load when your heart rate rises into the light-intensity heart-rate-reserve range. Higher-intensity time is weighted with Edwards-style heart-rate-zone TRIMP, while lower activity uses a Banister-style continuous TRIMP curve."
                 )
                 ExplanationBlock(
                     title: "0-21 score",
-                    text: "After the app sums TRIMP load across the day, it maps that load onto a 0-21 logarithmic strain scale. The logarithmic shape still makes early real activity visible, but passive low HR changes should no longer create a large morning score before you have actually moved much."
+                    text: "After the app sums quiet-awake load and HR-derived TRIMP load across the day, it maps that total onto a 0-21 logarithmic strain scale. A quiet awake day should slowly accumulate low strain, while walks and workouts add noticeably more because their HR load is layered on top."
                 )
                 ExplanationBlock(
                     title: "Adjusted load",

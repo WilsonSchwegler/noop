@@ -28,6 +28,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private static let restoreID = "com.noopapp.noop.ios.ble.central"
     private static let metricsRefreshDebounceSeconds: TimeInterval = 8
     private static let metricsRefreshIntervalSeconds: TimeInterval = 30 * 60
+    private static let metricsRefreshTimeoutSeconds: TimeInterval = 60
     private static let metricsLogVersion = IOSWhoopDeviceMetrics.dailyLogVersion
     private static let maxLoggedSleepIntervals = 96
 
@@ -172,7 +173,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     }
 
     func refreshDeviceMetrics(date: Date = Date()) {
-        metricsRefreshTask?.cancel()
+        cancelMetricsRefresh()
         guard let store else {
             prepareLocalStore()
             if metrics == .empty {
@@ -188,7 +189,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     }
 
     func refreshDeviceMetricsNow(date: Date = Date()) async {
-        metricsRefreshTask?.cancel()
+        cancelMetricsRefresh()
         guard let store else {
             prepareLocalStore()
             if metrics == .empty {
@@ -210,7 +211,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
             prepareLocalStore()
             return
         }
-        metricsRefreshTask?.cancel()
+        cancelMetricsRefresh()
         let day = Self.dayString(date)
         do {
             _ = try await store.upsertMetricSeries([
@@ -242,7 +243,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
             prepareLocalStore()
             return
         }
-        metricsRefreshTask?.cancel()
+        cancelMetricsRefresh()
         let day = Self.dayString(date)
         do {
             _ = try await store.upsertMetricSeries([
@@ -270,7 +271,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     }
 
     func loadLoggedMetricsForDay(_ date: Date) {
-        metricsRefreshTask?.cancel()
+        cancelMetricsRefresh()
         guard let store else {
             prepareLocalStore()
             if metrics == .empty {
@@ -418,7 +419,13 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
                                    finalLog: Bool = false,
                                    recalculateSleep: Bool = false) async {
         isRefreshingMetrics = true
+        let watchdog = metricsRefreshWatchdog(generation: generation)
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.metricsRefreshTimeoutSeconds,
+            execute: watchdog
+        )
         defer {
+            watchdog.cancel()
             if generation == metricsRefreshGeneration {
                 isRefreshingMetrics = false
             }
@@ -439,6 +446,27 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         } catch {
             guard !Task.isCancelled, generation == metricsRefreshGeneration else { return }
             metrics.status = "Metric refresh failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func cancelMetricsRefresh(clearLoading: Bool = true) {
+        metricsRefreshTask?.cancel()
+        metricsRefreshTask = nil
+        if clearLoading {
+            isRefreshingMetrics = false
+        }
+    }
+
+    private func metricsRefreshWatchdog(generation: Int) -> DispatchWorkItem {
+        DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard generation == self.metricsRefreshGeneration, self.isRefreshingMetrics else { return }
+            self.metricsRefreshGeneration += 1
+            self.metricsRefreshTask?.cancel()
+            self.metricsRefreshTask = nil
+            self.isRefreshingMetrics = false
+            self.metrics.status = "Metric refresh timed out. Pull to refresh and try again."
+            self.append("Metric refresh timed out after \(Int(Self.metricsRefreshTimeoutSeconds))s")
         }
     }
 
