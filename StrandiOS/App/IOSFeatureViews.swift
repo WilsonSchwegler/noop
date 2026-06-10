@@ -8,6 +8,15 @@ private extension Notification.Name {
 }
 
 private extension View {
+    @ViewBuilder
+    func noopRefreshableWhen(_ condition: Bool, action: @escaping @Sendable () async -> Void) -> some View {
+        if condition {
+            self.refreshable(action: action)
+        } else {
+            self
+        }
+    }
+
     func dismissNOOPKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
@@ -113,7 +122,7 @@ struct TodayIOSView: View {
                     showingCalendar = true
                     loadRecoveryScores(for: selectedDate)
                 }
-                if scanner.isRefreshingMetrics {
+                if Calendar.current.isDateInToday(selectedDate), scanner.isRefreshingMetrics {
                     MetricsRefreshBanner()
                 }
                 HStack(spacing: 10) {
@@ -169,7 +178,7 @@ struct TodayIOSView: View {
                                 .font(.caption.weight(.bold))
                                 .foregroundStyle(StrandPalette.textTertiary)
                             Spacer()
-                            Text(scanner.heartRate.map { "\($0) bpm" } ?? "-- bpm")
+                            Text(heartRateHeaderText)
                                 .font(.subheadline.weight(.semibold).monospacedDigit())
                                 .foregroundStyle(StrandPalette.metricRose)
                         }
@@ -192,15 +201,29 @@ struct TodayIOSView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .scrollContentBackground(.hidden)
-        .refreshable {
+        .noopRefreshableWhen(Calendar.current.isDateInToday(selectedDate)) {
             await scanner.refreshDeviceMetricsNow(date: selectedDate)
-            pedometer.refresh(date: selectedDate)
+            await MainActor.run {
+                pedometer.refresh(date: selectedDate) { date, steps in
+                    scanner.recordPhoneSteps(steps, for: date)
+                }
+            }
         }
         .onAppear {
             loadRecoveryScores(for: selectedDate)
+            pedometer.refresh(date: selectedDate) { date, steps in
+                scanner.recordPhoneSteps(steps, for: date)
+            }
         }
         .onChange(of: selectedDate) { date in
-            scanner.refreshDeviceMetrics(date: date)
+            if Calendar.current.isDateInToday(date) {
+                scanner.refreshDeviceMetrics(date: date)
+                pedometer.refresh(date: date) { date, steps in
+                    scanner.recordPhoneSteps(steps, for: date)
+                }
+            } else {
+                scanner.loadLoggedMetricsForDay(date)
+            }
             loadRecoveryScores(for: date)
         }
         .sheet(isPresented: $showingCalendar) {
@@ -220,6 +243,9 @@ struct TodayIOSView: View {
     }
 
     private var effectiveDailyStrain: Double? {
+        guard Calendar.current.isDateInToday(selectedDate) else {
+            return scanner.metrics.strain
+        }
         let computed = IOSStrainEstimator.awakeDayStrain(metricSamples: awakeDayHRSamples)
         let bestWorkout = workoutsForSelectedDate.compactMap(\.effectiveStrain).max()
         return [computed, scanner.metrics.strain, bestWorkout]
@@ -232,10 +258,18 @@ struct TodayIOSView: View {
     }
 
     private var displaySteps: Int {
-        if scanner.metrics.stepsSource == "WHOOP steps" {
-            return scanner.metrics.steps
+        Calendar.current.isDateInToday(selectedDate)
+            ? (pedometer.displayedSteps ?? scanner.metrics.steps)
+            : scanner.metrics.steps
+    }
+
+    private var heartRateHeaderText: String {
+        if Calendar.current.isDateInToday(selectedDate) {
+            return scanner.heartRate.map { "\($0) bpm" } ?? "-- bpm"
         }
-        return pedometer.todaySteps ?? scanner.metrics.steps
+        guard !scanner.metrics.todayHRSamples.isEmpty else { return "-- bpm" }
+        let avg = scanner.metrics.todayHRSamples.reduce(0) { $0 + $1.bpm } / scanner.metrics.todayHRSamples.count
+        return "avg \(avg) bpm"
     }
 
     private var recoveryAdjustedLoad: Double? {

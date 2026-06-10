@@ -28,6 +28,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private static let restoreID = "com.noopapp.noop.ios.ble.central"
     private static let metricsRefreshDebounceSeconds: TimeInterval = 8
     private static let metricsRefreshIntervalSeconds: TimeInterval = 30 * 60
+    private static let metricsLogVersion = IOSWhoopDeviceMetrics.dailyLogVersion
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -59,6 +60,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
 
     private let deviceId = "whoop-primary"
     private let finalizedDayKey = "noop.lastFinalizedMetricsDay"
+    private let metricsLogVersionKey = "noop.metricsLogVersion"
 
     var canScan: Bool { central?.state == .poweredOn }
     var isConnected: Bool { peripheral?.state == .connected }
@@ -191,6 +193,68 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         await runMetricsRefresh(store: store, date: date, generation: generation, persistLog: true)
     }
 
+    func loadLoggedMetricsForDay(_ date: Date) {
+        guard !Calendar.current.isDateInToday(date) else {
+            refreshDeviceMetrics(date: date)
+            return
+        }
+        metricsRefreshTask?.cancel()
+        guard let store else {
+            prepareLocalStore()
+            if metrics == .empty {
+                metrics.status = "Loading local WHOOP data"
+            }
+            return
+        }
+        metricsRefreshGeneration += 1
+        let generation = metricsRefreshGeneration
+        Task { @MainActor in
+            do {
+                if let snapshot = try await IOSWhoopDeviceMetrics.loggedDaySnapshot(
+                    store: store,
+                    deviceId: self.deviceId,
+                    date: date
+                ) {
+                    guard !Task.isCancelled, generation == self.metricsRefreshGeneration else { return }
+                    self.metrics = snapshot
+                } else {
+                    await self.rebuildLoggedMetricsForDay(date, store: store, generation: generation)
+                }
+            } catch {
+                guard !Task.isCancelled, generation == self.metricsRefreshGeneration else { return }
+                self.metrics.status = "Logged metrics failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func rebuildLoggedMetricsForDay(_ date: Date, store: WhoopStore, generation: Int) async {
+        let dayStart = Calendar.current.startOfDay(for: date)
+        let finalMoment = (Calendar.current.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart)
+            .addingTimeInterval(-1)
+        do {
+            let snapshot = try await IOSWhoopDeviceMetrics.refresh(
+                store: store,
+                deviceId: deviceId,
+                now: finalMoment
+            )
+            await persistMetricSnapshot(snapshot, for: finalMoment, final: true)
+            if let logged = try await IOSWhoopDeviceMetrics.loggedDaySnapshot(
+                store: store,
+                deviceId: deviceId,
+                date: date
+            ) {
+                guard !Task.isCancelled, generation == metricsRefreshGeneration else { return }
+                metrics = logged
+            }
+        } catch {
+            guard !Task.isCancelled, generation == metricsRefreshGeneration else { return }
+            var empty = IOSWhoopDeviceSnapshot.empty
+            empty.status = "No finalized metrics log for this day"
+            metrics = empty
+            append("Daily log rebuild failed: \(error.localizedDescription)")
+        }
+    }
+
     func prepareLocalStore() {
         bootstrapStoreIfNeeded()
     }
@@ -215,6 +279,28 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         } catch {
             append("Recovery calendar failed: \(error.localizedDescription)")
             return [:]
+        }
+    }
+
+    func recordPhoneSteps(_ steps: Int, for date: Date) {
+        guard steps >= 0 else { return }
+        guard let store else {
+            prepareLocalStore()
+            return
+        }
+        let day = Self.dayString(date)
+        Task { @MainActor in
+            do {
+                _ = try await store.upsertMetricSeries([
+                    MetricPoint(day: day, key: "noop.steps", value: Double(steps)),
+                    MetricPoint(day: day, key: "steps", value: Double(steps)),
+                ], deviceId: self.deviceId)
+                self.metrics.steps = steps
+                self.metrics.stepsSource = "iPhone steps"
+                self.append("Logged iPhone steps for \(day): \(steps)")
+            } catch {
+                self.append("Step log failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -269,6 +355,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         guard let store else { return }
         let day = Self.dayString(date)
         var rows: [MetricPoint] = [
+            MetricPoint(day: day, key: "noop.logVersion", value: Double(Self.metricsLogVersion)),
             MetricPoint(day: day, key: "noop.snapshotUpdatedAt", value: Date().timeIntervalSince1970),
             MetricPoint(day: day, key: "noop.finalized", value: final ? 1 : 0),
             MetricPoint(day: day, key: "noop.sleepHours", value: snapshot.whoopSleepHours),
@@ -277,6 +364,27 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
             MetricPoint(day: day, key: "noop.steps", value: Double(snapshot.steps)),
             MetricPoint(day: day, key: "noop.activityPoints", value: Double(snapshot.activityPoints)),
         ]
+        rows.append(MetricPoint(day: day, key: "noop.sleepStartTs", value: snapshot.whoopSleepIntervals.first?.start.timeIntervalSince1970 ?? 0))
+        rows.append(MetricPoint(day: day, key: "noop.sleepEndTs", value: snapshot.whoopSleepIntervals.last?.end.timeIntervalSince1970 ?? 0))
+        var sleepStages = [
+            "noop.sleepCoreHours": 0.0,
+            "noop.sleepDeepHours": 0.0,
+            "noop.sleepREMHours": 0.0,
+            "noop.sleepAwakeHours": 0.0,
+        ]
+        for stage in snapshot.whoopSleepStages {
+            let key: String
+            switch stage.name {
+            case "Deep": key = "noop.sleepDeepHours"
+            case "REM": key = "noop.sleepREMHours"
+            case "Awake": key = "noop.sleepAwakeHours"
+            default: key = "noop.sleepCoreHours"
+            }
+            sleepStages[key, default: 0] += stage.hours
+        }
+        for key in sleepStages.keys.sorted() {
+            rows.append(MetricPoint(day: day, key: key, value: sleepStages[key] ?? 0))
+        }
         if let strain = snapshot.strain {
             rows.append(MetricPoint(day: day, key: "strain", value: strain))
         }
@@ -574,7 +682,9 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         let calendar = Calendar.current
         guard let yesterday = calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: Date())) else { return }
         let day = Self.dayString(yesterday)
-        guard UserDefaults.standard.string(forKey: finalizedDayKey) != day else { return }
+        let logVersion = UserDefaults.standard.integer(forKey: metricsLogVersionKey)
+        guard UserDefaults.standard.string(forKey: finalizedDayKey) != day ||
+                logVersion < Self.metricsLogVersion else { return }
         finalizeMetricsDay(endingAt: yesterday.addingTimeInterval(24 * 3600 - 1))
     }
 
@@ -590,6 +700,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
                 )
                 await self.persistMetricSnapshot(snapshot, for: date, final: true)
                 UserDefaults.standard.set(day, forKey: self.finalizedDayKey)
+                UserDefaults.standard.set(Self.metricsLogVersion, forKey: self.metricsLogVersionKey)
             } catch {
                 self.append("Final metrics failed for \(day): \(error.localizedDescription)")
             }

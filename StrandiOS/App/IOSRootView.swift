@@ -22,12 +22,16 @@ struct IOSRootView: View {
         .background(StrandPalette.surfaceBase.ignoresSafeArea())
         .task {
             scanner.setAppActive(true)
-            pedometer.refresh()
+            pedometer.refresh { date, steps in
+                scanner.recordPhoneSteps(steps, for: date)
+            }
         }
         .onChange(of: scenePhase) { phase in
             scanner.setAppActive(phase == .active)
             if phase == .active {
-                pedometer.refresh()
+                pedometer.refresh { date, steps in
+                    scanner.recordPhoneSteps(steps, for: date)
+                }
             }
         }
         .onReceive(workoutTimer) { _ in
