@@ -52,6 +52,9 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private var metricsRefreshDeferredWhileInactive = false
     private var midnightFinalization: DispatchWorkItem?
     private var lastForegroundHistoryCatchUpAt: Date?
+    private var reconnectWorkItem: DispatchWorkItem?
+    private var reconnectAttempts = 0
+    private var intentionalDisconnect = false
 
     private let deviceId = "whoop-primary"
     private let finalizedDayKey = "noop.lastFinalizedMetricsDay"
@@ -74,7 +77,10 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
             append("Bluetooth is not ready: \(bluetoothState)")
             return
         }
-        disconnect()
+        intentionalDisconnect = false
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        stopActiveConnectionForScan()
         isScanning = true
         connectionState = "Scanning"
         append("Looking for WHOOP")
@@ -91,6 +97,11 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     }
 
     func disconnect() {
+        intentionalDisconnect = true
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        reconnectAttempts = 0
+        commandCharacteristic = nil
         scanTimeout?.cancel()
         scanTimeout = nil
         central.stopScan()
@@ -330,8 +341,14 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
             guard let self, self.isScanning else { return }
             self.central.stopScan()
             self.isScanning = false
-            self.connectionState = "Not Found"
-            self.append("WHOOP not found. Close the official WHOOP app, keep the strap nearby, then scan again.")
+            if self.intentionalDisconnect {
+                self.connectionState = "Not Found"
+                self.append("WHOOP not found. Close the official WHOOP app, keep the strap nearby, then scan again.")
+            } else {
+                self.connectionState = "Reconnecting"
+                self.append("WHOOP not found yet; will keep trying")
+                self.scheduleReconnect(reason: "scan timeout")
+            }
         }
         scanTimeout = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: item)
@@ -341,6 +358,8 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
                          advertisementData: [String: Any],
                          rssi: NSNumber?,
                          reason: String) {
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
         self.peripheral = peripheral
         deviceName = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
         peripheral.delegate = self
@@ -355,6 +374,17 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         let rssiText = rssi.map { ", RSSI \($0)" } ?? ""
         append("Found \(deviceName ?? peripheral.identifier.uuidString) (\(reason))\(rssiText)")
         central.connect(peripheral, options: nil)
+    }
+
+    private func stopActiveConnectionForScan() {
+        scanTimeout?.cancel()
+        scanTimeout = nil
+        central.stopScan()
+        isScanning = false
+        commandCharacteristic = nil
+        if let peripheral {
+            central.cancelPeripheralConnection(peripheral)
+        }
     }
 
     private static func looksLikeWhoop(name: String?, advertisementData: [String: Any]) -> Bool {
@@ -377,6 +407,34 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         }
         connect(to: peripheral, advertisementData: [:], rssi: nil, reason: reason)
         return true
+    }
+
+    private func scheduleReconnect(reason: String) {
+        guard !intentionalDisconnect else { return }
+        guard central.state == .poweredOn else { return }
+        guard peripheral?.state != .connected else { return }
+        reconnectWorkItem?.cancel()
+
+        reconnectAttempts += 1
+        let delay = min(30.0, Double([2, 5, 10, 20, 30][min(reconnectAttempts - 1, 4)]))
+        connectionState = "Reconnecting"
+        append("WHOOP disconnected; reconnecting in \(Int(delay))s (\(reason))")
+
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, !self.intentionalDisconnect, self.central.state == .poweredOn else { return }
+            if self.reconnectConnectedWhoopIfAvailable(reason: "auto reconnect") {
+                return
+            }
+            self.isScanning = true
+            self.connectionState = "Reconnecting"
+            self.central.scanForPeripherals(
+                withServices: Self.scanServices,
+                options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+            )
+            self.armScanTimeout()
+        }
+        reconnectWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
     }
 
     private func restore(_ restored: CBPeripheral) {
@@ -822,7 +880,7 @@ extension IOSWhoopScanner: @preconcurrency CBCentralManagerDelegate {
         case .poweredOff: bluetoothState = "Off"
         case .poweredOn:
             bluetoothState = "On"
-            if peripheral == nil {
+            if peripheral == nil || peripheral?.state == .disconnected {
                 _ = reconnectConnectedWhoopIfAvailable(reason: "Bluetooth restored")
             }
         @unknown default: bluetoothState = "Other"
@@ -846,6 +904,10 @@ extension IOSWhoopScanner: @preconcurrency CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        reconnectAttempts = 0
+        intentionalDisconnect = false
         connectionState = "Connected"
         append("Connected")
         bootstrapStoreIfNeeded()
@@ -856,10 +918,12 @@ extension IOSWhoopScanner: @preconcurrency CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         connectionState = "Failed"
         append("Connect failed: \(error?.localizedDescription ?? "unknown error")")
+        scheduleReconnect(reason: "connect failed")
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        connectionState = "Disconnected"
+        commandCharacteristic = nil
+        connectionState = intentionalDisconnect ? "Disconnected" : "Reconnecting"
         backfillTimeout?.cancel()
         backfillTimeout = nil
         backfilling = false
@@ -873,6 +937,7 @@ extension IOSWhoopScanner: @preconcurrency CBCentralManagerDelegate {
             }
         }
         append("Disconnected\(error.map { ": \($0.localizedDescription)" } ?? "")")
+        scheduleReconnect(reason: error == nil ? "link dropped" : "link error")
     }
 }
 
