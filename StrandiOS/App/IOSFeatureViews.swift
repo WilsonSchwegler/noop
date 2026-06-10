@@ -605,7 +605,7 @@ private struct ActiveWorkoutCard: View {
 
             HStack(spacing: 10) {
                 ScoreCard(title: "Live HR", value: scanner.heartRate.map { "\($0)" } ?? "--", unit: "bpm", color: StrandPalette.zone3)
-                let activeStrain = recorder.strain(for: active.hrSamples)
+                let activeStrain = recorder.strain(for: active.hrSamples, workoutTypeId: active.type.id)
                 ScoreCard(title: "Strain", value: activeStrain.map { String(format: "%.1f", $0) } ?? "--", unit: activeStrain == nil ? "" : "/21", color: StrandPalette.strainColor(activeStrain ?? 0))
             }
             HStack(spacing: 10) {
