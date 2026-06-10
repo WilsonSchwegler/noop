@@ -216,7 +216,7 @@ struct TodayIOSView: View {
     }
 
     private var effectiveDailyStrain: Double? {
-        let workoutStrains = workoutsForSelectedDate.compactMap(\.effectiveStrain)
+        let workoutStrains = supplementalWorkoutStrains(for: workoutsForSelectedDate)
         let allStrains = [scanner.metrics.strain].compactMap { $0 } + workoutStrains
         return IOSStrainEstimator.combine(allStrains)
     }
@@ -227,6 +227,30 @@ struct TodayIOSView: View {
 
     private var recoveryAdjustedLoad: Double? {
         IOSStrainEstimator.recoveryAdjustedLoad(strain: effectiveDailyStrain, recovery: effectiveRecoveryScore)
+    }
+
+    private func supplementalWorkoutStrains(for workouts: [IOSLoggedWorkout]) -> [Double] {
+        workouts
+            .filter { !deviceHeartRateCovers($0) }
+            .compactMap(\.effectiveStrain)
+    }
+
+    private func deviceHeartRateCovers(_ workout: IOSLoggedWorkout) -> Bool {
+        guard scanner.metrics.strain != nil else { return false }
+        let start = Int(workout.startedAt.timeIntervalSince1970)
+        let end = Int(workout.endedAt.timeIntervalSince1970)
+        guard end > start else { return false }
+
+        let samples = scanner.metrics.todayHRSamples
+            .filter { $0.ts >= start && $0.ts <= end }
+            .sorted { $0.ts < $1.ts }
+        guard samples.count >= 2 else { return false }
+
+        let coveredSeconds = zip(samples, samples.dropFirst()).reduce(0) { total, pair in
+            total + max(0, min(60, pair.1.ts - pair.0.ts))
+        }
+        let duration = max(1, end - start)
+        return Double(coveredSeconds) / Double(duration) >= 0.50
     }
 
     private var heartRateIntervals: [HRChartInterval] {
@@ -2309,9 +2333,28 @@ private struct StrainExplanationView: View {
     }
 
     private var effectiveDailyStrain: Double? {
-        let workoutStrains = workoutsForToday.compactMap(\.effectiveStrain)
+        let workoutStrains = workoutsForToday
+            .filter { !deviceHeartRateCovers($0) }
+            .compactMap(\.effectiveStrain)
         let allStrains = [scanner.metrics.strain].compactMap { $0 } + workoutStrains
         return IOSStrainEstimator.combine(allStrains)
+    }
+
+    private func deviceHeartRateCovers(_ workout: IOSLoggedWorkout) -> Bool {
+        guard scanner.metrics.strain != nil else { return false }
+        let start = Int(workout.startedAt.timeIntervalSince1970)
+        let end = Int(workout.endedAt.timeIntervalSince1970)
+        guard end > start else { return false }
+
+        let samples = scanner.metrics.todayHRSamples
+            .filter { $0.ts >= start && $0.ts <= end }
+            .sorted { $0.ts < $1.ts }
+        guard samples.count >= 2 else { return false }
+
+        let coveredSeconds = zip(samples, samples.dropFirst()).reduce(0) { total, pair in
+            total + max(0, min(60, pair.1.ts - pair.0.ts))
+        }
+        return Double(coveredSeconds) / Double(max(1, end - start)) >= 0.50
     }
 }
 

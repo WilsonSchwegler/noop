@@ -2,6 +2,7 @@ import SwiftUI
 import StrandDesign
 
 struct IOSRootView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var health: IOSHealthStore
     @EnvironmentObject private var scanner: IOSWhoopScanner
     @EnvironmentObject private var workoutRecorder: IOSWorkoutRecorder
@@ -19,6 +20,12 @@ struct IOSRootView: View {
         .tint(StrandPalette.accent)
         .background(StrandPalette.surfaceBase.ignoresSafeArea())
         .task {
+            scanner.prepareLocalStore()
+            scanner.refreshDeviceMetrics()
+        }
+        .onChange(of: scenePhase) { phase in
+            guard phase == .active else { return }
+            scanner.prepareLocalStore()
             scanner.refreshDeviceMetrics()
         }
         .onReceive(workoutTimer) { _ in

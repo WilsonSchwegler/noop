@@ -44,6 +44,9 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private var metricsRefreshDebounce: DispatchWorkItem?
     private var metricsRefreshTask: Task<Void, Never>?
     private var metricsRefreshGeneration = 0
+    private var storeBootstrapTask: Task<Void, Never>?
+    private var lastScheduledMetricsRefreshAt: Date?
+    private var lastLiveChartMergeAt: Date?
 
     private let deviceId = "whoop-primary"
 
@@ -123,7 +126,10 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     func refreshDeviceMetrics(date: Date = Date()) {
         metricsRefreshTask?.cancel()
         guard let store else {
-            metrics = .empty
+            prepareLocalStore()
+            if metrics == .empty {
+                metrics.status = "Loading local WHOOP data"
+            }
             return
         }
         metricsRefreshGeneration += 1
@@ -142,6 +148,10 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
                 self.metrics.status = "Metric refresh failed: \(error.localizedDescription)"
             }
         }
+    }
+
+    func prepareLocalStore() {
+        bootstrapStoreIfNeeded()
     }
 
     func recoveryScores(from start: Date, to end: Date) async -> [String: Double] {
@@ -277,15 +287,17 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
 
     private func bootstrapStoreIfNeeded() {
         guard store == nil else { return }
-        Task { @MainActor in
+        guard storeBootstrapTask == nil else { return }
+        storeBootstrapTask = Task { @MainActor in
+            defer { self.storeBootstrapTask = nil }
             do {
                 let path = try IOSStorePaths.defaultDatabasePath()
                 let store = try await WhoopStore(path: path)
                 try await store.upsertDevice(id: deviceId, mac: peripheral?.identifier.uuidString, name: deviceName ?? "WHOOP 4.0")
                 self.store = store
-                self.collector = IOSCollector(store: store, deviceId: deviceId) { [weak self] in
+                self.collector = IOSCollector(store: store, deviceId: deviceId, onStoreFlush: { [weak self] in
                     self?.scheduleMetricsRefresh()
-                }
+                })
                 self.backfiller = IOSBackfiller(store: store, deviceId: deviceId) { [weak self] trim, endData in
                     self?.ackHistoricalChunk(trim: trim, endData: endData)
                 }
@@ -336,10 +348,18 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private func scheduleMetricsRefresh() {
         metricsRefreshDebounce?.cancel()
         let item = DispatchWorkItem { [weak self] in
-            self?.refreshDeviceMetrics()
+            guard let self else { return }
+            let now = Date()
+            if let last = self.lastScheduledMetricsRefreshAt,
+               now.timeIntervalSince(last) < 20 {
+                self.scheduleMetricsRefresh()
+                return
+            }
+            self.lastScheduledMetricsRefreshAt = now
+            self.refreshDeviceMetrics()
         }
         metricsRefreshDebounce = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0, execute: item)
     }
 
     private func ackHistoricalChunk(trim: UInt32, endData: [UInt8]) {
@@ -421,10 +441,15 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         guard bpm >= 30, bpm <= 220 else { return }
         let sampleDate = Date(timeIntervalSince1970: TimeInterval(ts))
         guard Calendar.current.isDateInToday(sampleDate) else { return }
+        if let lastLiveChartMergeAt,
+           sampleDate.timeIntervalSince(lastLiveChartMergeAt) < 5 {
+            return
+        }
 
         if metrics.todayHRSamples.last?.ts == ts {
             return
         }
+        lastLiveChartMergeAt = sampleDate
 
         let nextId = (metrics.todayHRSamples.last?.id ?? -1) + 1
         metrics.todayHRSamples.append(IOSMetricHRSample(id: nextId, ts: ts, bpm: bpm))
