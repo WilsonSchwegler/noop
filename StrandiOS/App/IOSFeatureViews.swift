@@ -1968,6 +1968,7 @@ private struct HospitalHRChart: View {
     var intervals: [HRChartInterval] = []
     var compactPreview = true
     var visibleWindowHoursOverride: Int? = nil
+    var allowsPinchZoom = false
 
     var body: some View {
         InteractiveHRChart(
@@ -1976,7 +1977,8 @@ private struct HospitalHRChart: View {
             intervals: intervals,
             averagePerMinute: true,
             visibleWindowHours: visibleWindowHoursOverride ?? (compactPreview ? 12 : nil),
-            allowsSelection: !compactPreview
+            allowsSelection: !compactPreview,
+            allowsPinchZoom: allowsPinchZoom
         )
     }
 }
@@ -2030,7 +2032,11 @@ private struct InteractiveHRChart: View {
     var averagePerMinute = false
     var visibleWindowHours: Int?
     var allowsSelection = true
+    var allowsPinchZoom = false
     @State private var selectedSample: HRChartSample?
+    @State private var baseZoom: CGFloat = 1
+    @State private var pinchScale: CGFloat = 1
+    @State private var zoomCenterTs: Int?
 
     var body: some View {
         GeometryReader { proxy in
@@ -2071,6 +2077,10 @@ private struct InteractiveHRChart: View {
                             .position(x: layout.plotRect.maxX - 34, y: layout.plotRect.minY + 12)
                     }
 
+                    if allowsPinchZoom {
+                        zoomBadge(layout: layout)
+                    }
+
                     if let selectedSample {
                         selectionOverlay(sample: selectedSample, layout: layout)
                     }
@@ -2080,6 +2090,21 @@ private struct InteractiveHRChart: View {
             .gesture(allowsSelection ? DragGesture(minimumDistance: 0)
                 .onChanged { value in
                     updateSelection(near: value.location, samples: chartSamples, layout: layout)
+                } : nil)
+            .simultaneousGesture(allowsPinchZoom ? MagnificationGesture()
+                .onChanged { value in
+                    if zoomCenterTs == nil {
+                        zoomCenterTs = selectedSample?.ts ?? ((fullDomain?.first ?? 0) + (fullDomain?.last ?? 0)) / 2
+                    }
+                    pinchScale = value
+                }
+                .onEnded { value in
+                    baseZoom = clampedZoom(baseZoom * value)
+                    pinchScale = 1
+                    if baseZoom <= 1.01 {
+                        baseZoom = 1
+                        zoomCenterTs = nil
+                    }
                 } : nil)
             .onReceive(NotificationCenter.default.publisher(for: .noopClearHRChartSelection)) { _ in
                 selectedSample = nil
@@ -2111,6 +2136,21 @@ private struct InteractiveHRChart: View {
         if let visibleWindowHours, let last = ordered.last?.ts {
             let start = last - visibleWindowHours * 3600
             windowed = ordered.filter { $0.ts >= start }
+        } else if allowsPinchZoom,
+                  let first = ordered.first?.ts,
+                  let last = ordered.last?.ts,
+                  last > first {
+            let zoom = clampedZoom(baseZoom * pinchScale)
+            if zoom <= 1.01 {
+                windowed = ordered
+            } else {
+                let fullSpan = last - first
+                let span = max(10 * 60, Int((Double(fullSpan) / Double(zoom)).rounded()))
+                let center = min(last, max(first, zoomCenterTs ?? selectedSample?.ts ?? ((first + last) / 2)))
+                let start = min(max(first, center - span / 2), max(first, last - span))
+                let end = min(last, start + span)
+                windowed = ordered.filter { $0.ts >= start && $0.ts <= end }
+            }
         } else {
             windowed = ordered
         }
@@ -2218,6 +2258,18 @@ private struct InteractiveHRChart: View {
         }
     }
 
+    private func zoomBadge(layout: HRChartLayout) -> some View {
+        let zoom = clampedZoom(baseZoom * pinchScale)
+        let text = zoom <= 1.05 ? "Pinch to zoom" : String(format: "%.1fx", zoom)
+        return Text(text)
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(StrandPalette.textTertiary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(StrandPalette.surfaceRaised.opacity(0.82), in: Capsule())
+            .position(x: layout.plotRect.maxX - 42, y: layout.plotRect.minY + 32)
+    }
+
     private func axisLabel(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 9, weight: .semibold).monospacedDigit())
@@ -2230,9 +2282,20 @@ private struct InteractiveHRChart: View {
             return
         }
         let target = layout.ts(forX: point.x)
+        zoomCenterTs = target
         selectedSample = samples.min { lhs, rhs in
             abs(lhs.ts - target) < abs(rhs.ts - target)
         }
+    }
+
+    private var fullDomain: (first: Int, last: Int)? {
+        let ordered = samples.sorted { $0.ts < $1.ts }
+        guard let first = ordered.first?.ts, let last = ordered.last?.ts, last > first else { return nil }
+        return (first, last)
+    }
+
+    private func clampedZoom(_ value: CGFloat) -> CGFloat {
+        min(48, max(1, value))
     }
 
     private func timeText(_ ts: Int) -> String {
@@ -2279,47 +2342,10 @@ private struct HRIntervalLegend: View {
     }
 }
 
-private struct HRZoomControl: View {
-    @Binding var visibleHours: Int?
-
-    private let options: [(label: String, hours: Int?)] = [
-        ("All", nil),
-        ("12h", 12),
-        ("6h", 6),
-        ("3h", 3),
-        ("1h", 1),
-    ]
-
-    var body: some View {
-        HStack(spacing: 6) {
-            ForEach(options, id: \.label) { option in
-                Button {
-                    visibleHours = option.hours
-                    clearNOOPChartSelection()
-                } label: {
-                    Text(option.label)
-                        .font(.caption.weight(.bold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .foregroundStyle(visibleHours == option.hours ? .black : StrandPalette.textSecondary)
-                        .background(
-                            visibleHours == option.hours ? StrandPalette.accent : StrandPalette.surfaceInset,
-                            in: RoundedRectangle(cornerRadius: 8)
-                        )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(4)
-        .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
-    }
-}
-
 private struct HeartRateDayView: View {
     @EnvironmentObject private var scanner: IOSWhoopScanner
     let samples: [IOSMetricHRSample]
     let intervals: [HRChartInterval]
-    @State private var visibleHours: Int?
 
     var body: some View {
         ScrollView {
@@ -2328,10 +2354,10 @@ private struct HeartRateDayView: View {
                     samples: samples,
                     intervals: intervals,
                     compactPreview: false,
-                    visibleWindowHoursOverride: visibleHours
+                    visibleWindowHoursOverride: nil,
+                    allowsPinchZoom: true
                 )
                     .frame(height: 240)
-                HRZoomControl(visibleHours: $visibleHours)
                 HRIntervalLegend(intervals: intervals)
                 HStack(spacing: 10) {
                     ScoreCard(title: "Average", value: average.map { "\($0)" } ?? "--", unit: "bpm", color: StrandPalette.metricCyan)
