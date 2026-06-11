@@ -252,8 +252,8 @@ final class IOSWorkoutRecorder: NSObject, ObservableObject {
     @Published private(set) var workouts: [IOSLoggedWorkout] = []
     @Published private(set) var plans: [IOSWorkoutPlan] = []
 
-    private let storageKey = "noop.ios.workoutLog.v1"
-    private let plansStorageKey = "noop.ios.workoutPlans.v1"
+    private let storageKey = "warbfit.ios.workoutLog.v1"
+    private let plansStorageKey = "warbfit.ios.workoutPlans.v1"
     private let locationManager = CLLocationManager()
     @Published private(set) var locationStatus = "Location not requested"
 
@@ -377,6 +377,22 @@ final class IOSWorkoutRecorder: NSObject, ObservableObject {
     func deletePlan(_ plan: IOSWorkoutPlan) {
         plans.removeAll { $0.id == plan.id }
         savePlans()
+    }
+
+    func restoreBackup(workouts importedWorkouts: [IOSLoggedWorkout]?,
+                       plans importedPlans: [IOSWorkoutPlan]?) -> (workouts: Int, plans: Int) {
+        active = nil
+        stopLocationUpdates()
+
+        if let importedWorkouts {
+            workouts = importedWorkouts.sorted { $0.startedAt > $1.startedAt }
+            save()
+        }
+        if let importedPlans {
+            plans = importedPlans.sorted { $0.createdAt > $1.createdAt }
+            savePlans()
+        }
+        return (workouts.count, plans.count)
     }
 
     func plans(for type: IOSWorkoutType) -> [IOSWorkoutPlan] {

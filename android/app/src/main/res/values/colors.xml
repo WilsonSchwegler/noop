@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Ported from StrandDesign Palette.swift. These XML values back the window/system
-         chrome only; the in-app Compose surfaces use com.noop.ui.NoopTheme colors. -->
+         chrome only; the in-app Compose surfaces use net.wilsonschwegler.warbfit.ui.WarbFitTheme colors. -->
     <color name="surface_base">#FF060A08</color>
     <color name="surface_raised">#FF0D1512</color>
     <color name="accent">#FF18C98B</color>

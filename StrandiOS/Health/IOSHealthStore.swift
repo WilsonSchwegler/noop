@@ -27,7 +27,7 @@ final class IOSHealthStore: ObservableObject {
     @Published var sleepEfficiency = 0.0
     @Published var sleepStages: [IOSSleepStageSummary] = []
     @Published var sleepIntervals: [IOSSleepInterval] = []
-    @Published var exportStatus = "WHOOP export not run"
+    @Published var exportStatus = "Fitness tracker export not run"
     @Published var isExporting = false
 
     private let store = HKHealthStore()
@@ -65,16 +65,16 @@ final class IOSHealthStore: ObservableObject {
         Task { @MainActor in
             do {
                 try await requestExportAuthorization()
-                exportStatus = "Reading WHOOP data"
+                exportStatus = "Reading fitness tracker data"
                 let result = try await Self.buildHealthObjects(from: whoopStore, deviceId: deviceId)
                 guard !result.objects.isEmpty else {
-                    exportStatus = "No WHOOP data ready to export"
+                    exportStatus = "No fitness tracker data ready to export"
                     isExporting = false
                     return
                 }
                 if let sleepWindow = result.sleepWindow, result.sleepCount > 0 {
-                    exportStatus = "Replacing prior NOOP sleep export"
-                    try await deletePriorNoopSleepSamples(overlapping: sleepWindow)
+                    exportStatus = "Replacing prior WarbFit sleep export"
+                    try await deletePriorWarbFitSleepSamples(overlapping: sleepWindow)
                 }
                 try await save(result.objects)
                 exportStatus = "Exported \(result.hrCount) HR, \(result.sleepCount) sleep, \(result.workoutCount) workout, \(result.hrvCount) HRV, \(result.respCount) respiration samples"
@@ -139,7 +139,7 @@ final class IOSHealthStore: ObservableObject {
                     self.isAuthorized = true
                     self.status = "Loaded latest Health sleep from last 7 days (\(recentSamples.count) records)"
                 } else if categorySamples.isEmpty {
-                    self.status = "No Apple Health sleep records readable by NOOP"
+                    self.status = "No Apple Health sleep records readable by WarbFit"
                 } else {
                     self.status = "Health returned \(categorySamples.count) sleep records, but no asleep intervals"
                 }
@@ -191,7 +191,7 @@ final class IOSHealthStore: ObservableObject {
         }
     }
 
-    private func deletePriorNoopSleepSamples(overlapping window: DateInterval) async throws {
+    private func deletePriorWarbFitSleepSamples(overlapping window: DateInterval) async throws {
         guard let type = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) else { return }
         let start = window.start.addingTimeInterval(-2 * 3600)
         let end = window.end.addingTimeInterval(2 * 3600)
@@ -202,12 +202,12 @@ final class IOSHealthStore: ObservableObject {
                     continuation.resume(throwing: error)
                     return
                 }
-                let noopSleep = ((samples as? [HKCategorySample]) ?? []).filter { sample in
-                    let source = sample.metadata?["NOOPSource"] as? String
+                let warbfitSleep = ((samples as? [HKCategorySample]) ?? []).filter { sample in
+                    let source = sample.metadata?["WarbFitSource"] as? String
                     let syncID = sample.metadata?[HKMetadataKeySyncIdentifier] as? String
-                    return source == "WHOOP" && syncID?.hasPrefix("noop.whoop.sleep.") == true
+                    return source == "fitness tracker" && syncID?.hasPrefix("warbfit.whoop.sleep.") == true
                 }
-                continuation.resume(returning: noopSleep)
+                continuation.resume(returning: warbfitSleep)
             }
             store.execute(query)
         }
@@ -371,9 +371,9 @@ final class IOSHealthStore: ObservableObject {
 
     private static func syncMetadata(_ id: String) -> [String: Any] {
         [
-            HKMetadataKeySyncIdentifier: "noop.whoop.\(id)",
+            HKMetadataKeySyncIdentifier: "warbfit.whoop.\(id)",
             HKMetadataKeySyncVersion: 1,
-            "NOOPSource": "WHOOP",
+            "WarbFitSource": "fitness tracker",
         ]
     }
 
@@ -537,8 +537,8 @@ final class IOSHealthStore: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .authorizationDenied: return "Apple Health write access was not granted"
-            case .saveFailed: return "Apple Health did not save the exported WHOOP data"
-            case .deleteFailed: return "Apple Health did not replace the prior NOOP sleep export"
+            case .saveFailed: return "Apple Health did not save the exported fitness tracker data"
+            case .deleteFailed: return "Apple Health did not replace the prior WarbFit sleep export"
             }
         }
     }

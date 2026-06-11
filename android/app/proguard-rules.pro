@@ -1,4 +1,4 @@
-# NOOP — R8 / ProGuard rules.
+# WarbFit — R8 / ProGuard rules.
 #
 # The app is offline and reflection-light. Room generates its own keep rules, and
 # Compose ships consumer rules, so this file is mostly empty by design. Add keeps
@@ -6,11 +6,11 @@
 
 # Keep Room-generated database implementation classes (Room embeds its own rules too,
 # but this is an explicit safety net for the *_Impl classes it generates).
--keep class com.noop.data.** { *; }
+-keep class net.wilsonschwegler.warbfit.data.** { *; }
 
 # Protocol enums are matched by Int rawValue via fromRaw(...); keep their members so a
 # future reflective/serialized path can't be broken by minification. They are small.
--keep class com.noop.protocol.** { *; }
+-keep class net.wilsonschwegler.warbfit.protocol.** { *; }
 
 # Tink (pulled in by androidx.security:security-crypto for the encrypted AI-key store)
 # references errorprone annotations that aren't on the runtime classpath. They're

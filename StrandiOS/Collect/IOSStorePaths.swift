@@ -5,7 +5,7 @@ enum IOSStorePaths {
         let fm = FileManager.default
         let base = try fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
                               appropriateFor: nil, create: true)
-            .appendingPathComponent("OpenWhoop", isDirectory: true)
+            .appendingPathComponent("WarbFit", isDirectory: true)
         try fm.createDirectory(at: base, withIntermediateDirectories: true)
         return base.appendingPathComponent("whoop.sqlite").path
     }

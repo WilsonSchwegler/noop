@@ -181,8 +181,8 @@ public func frameFromPayload(_ data: [UInt8], type: UInt8, seq: UInt8 = 0, cmd: 
     return frame
 }
 
-/// EXPERIMENTAL: build a WHOOP 5.0/MG ("puffin") command frame in the CRC16 envelope (docs/PROTOCOL.md
-/// §2.2). The inner record is `[type][seq][cmd] + payload`; `declLen = innerLen + 4` (the CRC32 tail);
+/// EXPERIMENTAL: build a 5.0/MG ("puffin") command frame in the CRC16 envelope. The inner record is
+/// `[type][seq][cmd] + payload`; `declLen = innerLen + 4` (the CRC32 tail);
 /// the CRC16-Modbus covers the first six header bytes. `type` defaults to 35 (COMMAND) and `header`
 /// to `[0x00, 0x01]`, mirroring the structure of the only puffin frame we know a real strap accepts
 /// (the static CLIENT_HELLO). The returned frame round-trips through `verifyFrame(_:family:.whoop5)`.

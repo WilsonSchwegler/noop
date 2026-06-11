@@ -3,7 +3,7 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
-      NOOP is an OFFLINE WHOOP companion. It talks to the strap over BLE and stores
+      WarbFit is an OFFLINE WHOOP companion. It talks to the strap over BLE and stores
       everything locally (Room). The ONLY outbound network is the opt-in AI Coach
       (bring-your-own OpenAI/Anthropic key) — nothing is sent unless the user adds a
       key and asks a question. Hence the single INTERNET permission below.
@@ -70,7 +70,7 @@
     </queries>
 
     <application
-        android:name=".NoopApplication"
+        android:name=".WarbFitApplication"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="false"
@@ -78,14 +78,14 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.NOOP"
+        android:theme="@style/Theme.WarbFit"
         tools:targetApi="34">
 
         <activity
-            android:name="com.noop.ui.MainActivity"
+            android:name="net.wilsonschwegler.warbfit.ui.MainActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:theme="@style/Theme.NOOP">
+            android:theme="@style/Theme.WarbFit">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -100,7 +100,7 @@
         <activity-alias
             android:name="ViewPermissionUsageActivity"
             android:exported="true"
-            android:targetActivity="com.noop.ui.MainActivity"
+            android:targetActivity="net.wilsonschwegler.warbfit.ui.MainActivity"
             android:permission="android.permission.START_VIEW_PERMISSION_USAGE">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />

@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>NOOP</string>
+	<string>WarbFit</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -13,7 +13,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>NOOP</string>
+	<string>WarbFit</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -23,15 +23,15 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>NOOP connects directly to your WHOOP strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your iPhone. Nothing leaves your device.</string>
+	<string>WarbFit connects directly to your fitness tracker strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your iPhone. Nothing leaves your device.</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>NOOP reads Apple Health sleep analysis on-device to calculate a sleep score. Recovery, strain, activity, workouts, HRV, and resting heart rate come from your WHOOP strap.</string>
+	<string>WarbFit reads Apple Health sleep analysis on-device to calculate a sleep score. Recovery, strain, activity, workouts, HRV, and resting heart rate come from your fitness tracker strap.</string>
 	<key>NSHealthUpdateUsageDescription</key>
-	<string>NOOP can export WHOOP heart rate, HRV, detected sleep stages, workouts, and active energy to Apple Health when you explicitly request it.</string>
+	<string>WarbFit can export fitness tracker heart rate, HRV, detected sleep stages, workouts, and active energy to Apple Health when you explicitly request it.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>NOOP uses your location during outdoor runs and hikes to record your route, distance, and pace.</string>
+	<string>WarbFit uses your location during outdoor runs and hikes to record your route, distance, and pace.</string>
 	<key>NSMotionUsageDescription</key>
-	<string>NOOP uses iPhone motion step counts only when WHOOP step data is not available, so the Today steps card is not based on a weak motion estimate.</string>
+	<string>WarbFit uses iPhone motion step counts only when fitness tracker step data is not available, so the Today steps card is not based on a weak motion estimate.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>

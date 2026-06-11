@@ -5,7 +5,7 @@ import SwiftUI
 // Every screen composes ONLY these. Fixed dimensions + one spacing scale guarantee
 // the uniform, instrument-grade look from the reference. Do not invent ad-hoc cards.
 
-public enum NoopMetrics {
+public enum WarbFitMetrics {
     public static let cardRadius: CGFloat = 16
     public static let cardPadding: CGFloat = 16
     public static let gap: CGFloat = 12          // gap between cards
@@ -18,19 +18,19 @@ public enum NoopMetrics {
 // MARK: - Surface
 
 /// The one card surface. All cards use this — same radius, border, fill.
-public struct NoopCard<Content: View>: View {
+public struct WarbFitCard<Content: View>: View {
     private let padding: CGFloat
     @ViewBuilder private let content: () -> Content
     @State private var hover = false
-    public init(padding: CGFloat = NoopMetrics.cardPadding, @ViewBuilder content: @escaping () -> Content) {
+    public init(padding: CGFloat = WarbFitMetrics.cardPadding, @ViewBuilder content: @escaping () -> Content) {
         self.padding = padding; self.content = content
     }
     public var body: some View {
         content()
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: NoopMetrics.cardRadius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: NoopMetrics.cardRadius, style: .continuous)
+            .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: WarbFitMetrics.cardRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: WarbFitMetrics.cardRadius, style: .continuous)
                 .strokeBorder(hover ? StrandPalette.hairlineStrong : StrandPalette.hairline, lineWidth: 1))
             .shadow(color: .black.opacity(hover ? 0.25 : 0), radius: 10, y: 4)
             .onHover { hover = $0 }
@@ -79,7 +79,7 @@ public struct StatTile: View {
     }
 
     public var body: some View {
-        NoopCard(padding: 14) {
+        WarbFitCard(padding: 14) {
             VStack(alignment: .leading, spacing: 0) {
                 Text(label.uppercased()).strandOverline()
                 Spacer(minLength: 4)
@@ -95,7 +95,7 @@ public struct StatTile: View {
                 .padding(.top, 2)
             }
         }
-        .frame(height: NoopMetrics.tileHeight)
+        .frame(height: WarbFitMetrics.tileHeight)
     }
 }
 
@@ -105,12 +105,12 @@ public struct ChartCard<ChartBody: View, Footer: View>: View {
     let title: String
     var subtitle: String? = nil
     var trailing: String? = nil
-    var height: CGFloat = NoopMetrics.chartHeight
+    var height: CGFloat = WarbFitMetrics.chartHeight
     @ViewBuilder let chart: () -> ChartBody
     @ViewBuilder let footer: () -> Footer
 
     public init(title: String, subtitle: String? = nil, trailing: String? = nil,
-                height: CGFloat = NoopMetrics.chartHeight,
+                height: CGFloat = WarbFitMetrics.chartHeight,
                 @ViewBuilder chart: @escaping () -> ChartBody,
                 @ViewBuilder footer: @escaping () -> Footer = { EmptyView() }) {
         self.title = title; self.subtitle = subtitle; self.trailing = trailing
@@ -118,7 +118,7 @@ public struct ChartCard<ChartBody: View, Footer: View>: View {
     }
 
     public var body: some View {
-        NoopCard {
+        WarbFitCard {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -165,7 +165,7 @@ public struct InsightCard: View {
         self.category = category; self.status = status; self.detail = detail; self.statusColor = statusColor
     }
     public var body: some View {
-        NoopCard(padding: 18) {
+        WarbFitCard(padding: 18) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(category.uppercased()).strandOverline()
                 Text(status).font(StrandFont.title1).foregroundStyle(statusColor)

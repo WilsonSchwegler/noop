@@ -8,18 +8,18 @@ plugins {
 
 // Optional release signing. Credentials live in `keystore.properties` (git-ignored, never
 // committed); when it's absent — clones, CI without secrets — release falls back to the debug
-// key so `assembleRelease` always produces an installable APK. See docs/BUILD.md.
+// key so `assembleRelease` always produces an installable APK.
 val keystorePropsFile = rootProject.file("keystore.properties")
 val keystoreProps = Properties().apply {
     if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
 }
 
 android {
-    namespace = "com.noop"
+    namespace = "net.wilsonschwegler.warbfit"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.noop.whoop"
+        applicationId = "net.wilsonschwegler.warbfit"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
@@ -65,27 +65,6 @@ android {
                 signingConfigs.getByName("release")
             else
                 signingConfigs.getByName("debug")
-        }
-    }
-
-    // Two clearly-distinct apps that install side-by-side:
-    //   • full → "NOOP"      (com.noop.whoop)     — the real app, starts empty, pair a strap / import.
-    //   • demo → "NOOP Demo"  (com.noop.whoop.demo) — preloaded with 120 days of synthetic data and
-    //                          a visible DEMO badge, so anyone can explore every screen with no strap.
-    // Build e.g. ./gradlew assembleFullRelease assembleDemoRelease.
-    flavorDimensions += "tier"
-    productFlavors {
-        create("full") {
-            dimension = "tier"
-            buildConfigField("String", "TIER", "\"full\"")
-            buildConfigField("boolean", "ENABLE_DEMO", "false")
-        }
-        create("demo") {
-            dimension = "tier"
-            applicationIdSuffix = ".demo"
-            versionNameSuffix = "-demo"
-            buildConfigField("String", "TIER", "\"demo\"")
-            buildConfigField("boolean", "ENABLE_DEMO", "true")
         }
     }
 

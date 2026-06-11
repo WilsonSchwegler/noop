@@ -1,8 +1,7 @@
-name: Strand
+name: WarbFit
 options:
-  bundleIdPrefix: com.noopapp
+  bundleIdPrefix: net.wilsonschwegler
   deploymentTarget:
-    macOS: "13.0"
     iOS: "16.0"
   createIntermediateGroups: true
   groupSortPosition: top
@@ -14,11 +13,9 @@ settings:
     SWIFT_STRICT_CONCURRENCY: minimal
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
-    # Build for both Apple Silicon and Intel so the release runs on every Mac.
     ARCHS: "$(ARCHS_STANDARD)"
   configs:
     Release:
-      # Distribution builds must produce a universal binary, not just the host arch.
       ONLY_ACTIVE_ARCH: NO
 packages:
   WhoopProtocol:
@@ -27,51 +24,10 @@ packages:
     path: Packages/WhoopStore
   StrandAnalytics:
     path: Packages/StrandAnalytics
-  StrandImport:
-    path: Packages/StrandImport
   StrandDesign:
     path: Packages/StrandDesign
 targets:
-  Strand:
-    type: application
-    platform: macOS
-    deploymentTarget: "13.0"
-    sources:
-      - path: Strand
-        excludes:
-          - "Resources/Info.plist"
-          - "Resources/Strand.entitlements"
-    info:
-      path: Strand/Resources/Info.plist
-      properties:
-        CFBundleName: NOOP
-        CFBundleDisplayName: NOOP
-        LSMinimumSystemVersion: "13.0"
-        LSApplicationCategoryType: public.app-category.healthcare-fitness
-        NSBluetoothAlwaysUsageDescription: "NOOP connects directly to your WHOOP strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your Mac. Nothing leaves your device."
-    entitlements:
-      path: Strand/Resources/Strand.entitlements
-      properties:
-        com.apple.security.app-sandbox: true
-        com.apple.security.device.bluetooth: true
-        com.apple.security.files.user-selected.read-write: true
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.noopapp.noop
-        PRODUCT_NAME: NOOP
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        GENERATE_INFOPLIST_FILE: NO
-        # Hardened Runtime closes the DYLD_INSERT_LIBRARIES injection vector for the
-        # distributed (ad-hoc) build. The app uses no JIT / unsigned-exec memory, so it's safe.
-        ENABLE_HARDENED_RUNTIME: YES
-        COMBINE_HIDPI_IMAGES: YES
-    dependencies:
-      - package: WhoopProtocol
-      - package: WhoopStore
-      - package: StrandAnalytics
-      - package: StrandImport
-      - package: StrandDesign
-  NOOPiOS:
+  WarbFitiOS:
     type: application
     platform: iOS
     deploymentTarget: "16.0"
@@ -79,19 +35,19 @@ targets:
       - path: StrandiOS
         excludes:
           - "Resources/Info.plist"
-          - "Resources/NOOPiOS.entitlements"
+          - "Resources/WarbFitiOS.entitlements"
     info:
       path: StrandiOS/Resources/Info.plist
       properties:
-        CFBundleName: NOOP
-        CFBundleDisplayName: NOOP
+        CFBundleName: WarbFit
+        CFBundleDisplayName: WarbFit
         LSRequiresIPhoneOS: true
         UIRequiresFullScreen: true
-        NSBluetoothAlwaysUsageDescription: "NOOP connects directly to your WHOOP strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your iPhone. Nothing leaves your device."
-        NSHealthShareUsageDescription: "NOOP reads Apple Health sleep analysis on-device to calculate a sleep score. Recovery, strain, activity, workouts, HRV, and resting heart rate come from your WHOOP strap."
-        NSHealthUpdateUsageDescription: "NOOP can export WHOOP heart rate, HRV, detected sleep stages, workouts, and active energy to Apple Health when you explicitly request it."
-        NSLocationWhenInUseUsageDescription: "NOOP uses your location during outdoor runs and hikes to record your route, distance, and pace."
-        NSMotionUsageDescription: "NOOP uses iPhone motion step counts only when WHOOP step data is not available, so the Today steps card is not based on a weak motion estimate."
+        NSBluetoothAlwaysUsageDescription: "WarbFit connects directly to your fitness tracker strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your iPhone. Nothing leaves your device."
+        NSHealthShareUsageDescription: "WarbFit reads Apple Health sleep analysis on-device to calculate a sleep score. Recovery, strain, activity, workouts, HRV, and resting heart rate come from your fitness tracker strap."
+        NSHealthUpdateUsageDescription: "WarbFit can export fitness tracker heart rate, HRV, detected sleep stages, workouts, and active energy to Apple Health when you explicitly request it."
+        NSLocationWhenInUseUsageDescription: "WarbFit uses your location during outdoor runs and hikes to record your route, distance, and pace."
+        NSMotionUsageDescription: "WarbFit uses iPhone motion step counts only when fitness tracker step data is not available, so the Today steps card is not based on a weak motion estimate."
         UIBackgroundModes:
           - bluetooth-central
           - location
@@ -100,13 +56,13 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
     entitlements:
-      path: StrandiOS/Resources/NOOPiOS.entitlements
+      path: StrandiOS/Resources/WarbFitiOS.entitlements
       properties:
         com.apple.developer.healthkit: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.noopapp.noop.ios
-        PRODUCT_NAME: NOOP
+        PRODUCT_BUNDLE_IDENTIFIER: net.wilsonschwegler.warbfit
+        PRODUCT_NAME: WarbFit
         TARGETED_DEVICE_FAMILY: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -114,19 +70,4 @@ targets:
       - package: WhoopProtocol
       - package: WhoopStore
       - package: StrandAnalytics
-      - package: StrandImport
       - package: StrandDesign
-  StrandTests:
-    type: bundle.unit-test
-    platform: macOS
-    deploymentTarget: "13.0"
-    sources:
-      - StrandTests
-    dependencies:
-      - target: Strand
-      - package: WhoopProtocol
-      - package: WhoopStore
-    settings:
-      base:
-        GENERATE_INFOPLIST_FILE: YES
-        PRODUCT_BUNDLE_IDENTIFIER: com.noopapp.strandtests

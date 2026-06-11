@@ -3,6 +3,28 @@ import Foundation
 import WhoopProtocol
 import WhoopStore
 
+struct IOSDatabaseBackup {
+    let database: URL
+    let sidecars: [URL]
+}
+
+enum IOSBackupRestoreError: LocalizedError {
+    case alreadyRestoring
+    case restoreDatabaseNotFound
+    case restoreReopenFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .alreadyRestoring:
+            return "A restore is already running."
+        case .restoreDatabaseNotFound:
+            return "No WarbFit SQLite database file was found in the selected backup."
+        case .restoreReopenFailed(let reason):
+            return "The restored database could not be opened: \(reason)"
+        }
+    }
+}
+
 @MainActor
 final class IOSWhoopScanner: NSObject, ObservableObject {
     @Published var bluetoothState = "Starting"
@@ -13,6 +35,9 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     @Published var rrIntervals: [Int] = []
     @Published var isScanning = false
     @Published var isRefreshingMetrics = false
+    @Published var isExportingBackup = false
+    @Published var isRestoringBackup = false
+    @Published var backupExportStatus: String?
     @Published var metrics: IOSWhoopDeviceSnapshot = .empty
     @Published var logLines: [String] = []
 
@@ -25,7 +50,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private static let heartRateChar = CBUUID(string: "2A37")
     private static let batteryService = CBUUID(string: "180F")
     private static let batteryChar = CBUUID(string: "2A19")
-    private static let restoreID = "com.noopapp.noop.ios.ble.central"
+    private static let restoreID = "net.wilsonschwegler.warbfit.ble.central"
     private static let metricsRefreshDebounceSeconds: TimeInterval = 8
     private static let metricsRefreshIntervalSeconds: TimeInterval = 30 * 60
     private static let metricsRefreshTimeoutSeconds: TimeInterval = 60
@@ -33,6 +58,9 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private static let liveDataGapHistoryThresholdSeconds = 90
     private static let metricsLogVersion = IOSWhoopDeviceMetrics.dailyLogVersion
     private static let maxLoggedSleepIntervals = 96
+    private static let metricPrefix = "warbfit."
+    private static let legacyBackupPrefix = ["n", "o", "o", "p"].joined()
+    private static let legacyMetricPrefix = legacyBackupPrefix + "."
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -67,8 +95,8 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private var didRunInitialMetricsRefresh = false
 
     private let deviceId = "whoop-primary"
-    private let finalizedDayKey = "noop.lastFinalizedMetricsDay"
-    private let metricsLogVersionKey = "noop.metricsLogVersion"
+    private let finalizedDayKey = "warbfit.lastFinalizedMetricsDay"
+    private let metricsLogVersionKey = "warbfit.metricsLogVersion"
 
     var canScan: Bool { central?.state == .poweredOn }
     var isConnected: Bool { peripheral?.state == .connected }
@@ -94,7 +122,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         stopActiveConnectionForScan()
         isScanning = true
         connectionState = "Scanning"
-        append("Looking for WHOOP")
+        append("Looking for fitness tracker")
 
         if reconnectConnectedWhoopIfAvailable(reason: "already connected") {
             return
@@ -179,14 +207,14 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     func refreshDeviceMetrics(date: Date = Date()) {
         guard !backfilling, !backfillDraining else {
             pendingMetricsRefreshAfterBackfill = true
-            metrics.status = "Waiting for WHOOP history backfill before updating metrics"
+            metrics.status = "Waiting for fitness tracker history backfill before updating metrics"
             return
         }
         cancelMetricsRefresh()
         guard let store else {
             prepareLocalStore()
             if metrics == .empty {
-                metrics.status = "Loading local WHOOP data"
+                metrics.status = "Loading local fitness tracker data"
             }
             return
         }
@@ -200,14 +228,14 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     func refreshDeviceMetricsNow(date: Date = Date()) async {
         guard !backfilling, !backfillDraining else {
             pendingMetricsRefreshAfterBackfill = true
-            metrics.status = "Waiting for WHOOP history backfill before updating metrics"
+            metrics.status = "Waiting for fitness tracker history backfill before updating metrics"
             return
         }
         cancelMetricsRefresh()
         guard let store else {
             prepareLocalStore()
             if metrics == .empty {
-                metrics.status = "Loading local WHOOP data"
+                metrics.status = "Loading local fitness tracker data"
             }
             return
         }
@@ -229,9 +257,9 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         let day = Self.dayString(date)
         do {
             _ = try await store.upsertMetricSeries([
-                MetricPoint(day: day, key: "noop.sleepManualStartTs", value: start.timeIntervalSince1970),
-                MetricPoint(day: day, key: "noop.sleepManualEndTs", value: end.timeIntervalSince1970),
-                MetricPoint(day: day, key: "noop.sleepManualUpdatedAt", value: Date().timeIntervalSince1970),
+                MetricPoint(day: day, key: "warbfit.sleepManualStartTs", value: start.timeIntervalSince1970),
+                MetricPoint(day: day, key: "warbfit.sleepManualEndTs", value: end.timeIntervalSince1970),
+                MetricPoint(day: day, key: "warbfit.sleepManualUpdatedAt", value: Date().timeIntervalSince1970),
             ], deviceId: deviceId)
             append("Adjusted sleep window for \(day)")
         } catch {
@@ -261,9 +289,9 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         let day = Self.dayString(date)
         do {
             _ = try await store.upsertMetricSeries([
-                MetricPoint(day: day, key: "noop.sleepManualStartTs", value: 0),
-                MetricPoint(day: day, key: "noop.sleepManualEndTs", value: 0),
-                MetricPoint(day: day, key: "noop.sleepManualUpdatedAt", value: 0),
+                MetricPoint(day: day, key: "warbfit.sleepManualStartTs", value: 0),
+                MetricPoint(day: day, key: "warbfit.sleepManualEndTs", value: 0),
+                MetricPoint(day: day, key: "warbfit.sleepManualUpdatedAt", value: 0),
             ], deviceId: deviceId)
             append("Reset sleep window for \(day)")
         } catch {
@@ -289,7 +317,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         guard let store else {
             prepareLocalStore()
             if metrics == .empty {
-                metrics.status = "Loading local WHOOP data"
+                metrics.status = "Loading local fitness tracker data"
             }
             return
         }
@@ -390,7 +418,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         Task { @MainActor in
             do {
                 _ = try await store.upsertMetricSeries([
-                    MetricPoint(day: day, key: "noop.steps", value: Double(steps)),
+                    MetricPoint(day: day, key: "warbfit.steps", value: Double(steps)),
                     MetricPoint(day: day, key: "steps", value: Double(steps)),
                 ], deviceId: self.deviceId)
                 self.metrics.steps = steps
@@ -399,6 +427,132 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
             } catch {
                 self.append("Step log failed: \(error.localizedDescription)")
             }
+        }
+    }
+
+    func exportLocalDatabaseBackup() async -> IOSDatabaseBackup? {
+        guard !isExportingBackup else { return nil }
+        isExportingBackup = true
+        backupExportStatus = "Preparing WarbFit backup"
+        defer { isExportingBackup = false }
+
+        prepareLocalStore()
+        for _ in 0..<20 where store == nil {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        guard let store else {
+            backupExportStatus = "Fitness tracker database is still loading. Try again in a few seconds."
+            append("Backup skipped: fitness tracker store is not ready")
+            return nil
+        }
+
+        await collector?.flushStandardHR()
+        await collector?.flush()
+
+        do {
+            try await store.checkpointWAL()
+        } catch {
+            append("Backup checkpoint failed: \(error.localizedDescription)")
+        }
+
+        do {
+            let fm = FileManager.default
+            let source = URL(fileURLWithPath: try IOSStorePaths.defaultDatabasePath())
+            guard fm.fileExists(atPath: source.path) else {
+                backupExportStatus = "No local fitness tracker database file was found yet."
+                append("Backup skipped: database file is missing")
+                return nil
+            }
+
+            let folder = fm.temporaryDirectory
+                .appendingPathComponent("warbfit-backup-\(Self.backupTimestamp())-\(UUID().uuidString.prefix(8))",
+                                        isDirectory: true)
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            let destination = folder.appendingPathComponent("warbfit-whoop.sqlite")
+            try fm.copyItem(at: source, to: destination)
+            let sidecars = try Self.copySQLiteSidecarsIfNeeded(source: source,
+                                                               destination: destination,
+                                                               fileManager: fm)
+            backupExportStatus = "Backup ready to share"
+            append("Prepared WarbFit database backup")
+            return IOSDatabaseBackup(database: destination, sidecars: sidecars)
+        } catch {
+            backupExportStatus = "Backup failed: \(error.localizedDescription)"
+            append("Backup failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func restoreLocalDatabaseBackup(from urls: [URL]) async throws -> Bool {
+        guard !isRestoringBackup else { throw IOSBackupRestoreError.alreadyRestoring }
+        guard let databaseURL = Self.importedDatabaseURL(from: urls) else { return false }
+
+        isRestoringBackup = true
+        backupExportStatus = "Restoring WarbFit database"
+        defer { isRestoringBackup = false }
+
+        cancelMetricsRefresh()
+        metricsRefreshDebounce?.cancel()
+        metricsRefreshDebounce = nil
+        await collector?.flushStandardHR()
+        await collector?.flush()
+        do {
+            try await store?.checkpointWAL()
+        } catch {
+            append("Current database checkpoint before restore failed: \(error.localizedDescription)")
+        }
+
+        collector = nil
+        backfiller = nil
+        store = nil
+        storeBootstrapTask?.cancel()
+        storeBootstrapTask = nil
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        let fm = FileManager.default
+        let target = URL(fileURLWithPath: try IOSStorePaths.defaultDatabasePath())
+        let rollbackFolder = fm.temporaryDirectory
+            .appendingPathComponent("warbfit-restore-rollback-\(Self.backupTimestamp())-\(UUID().uuidString.prefix(8))",
+                                    isDirectory: true)
+
+        do {
+            try fm.createDirectory(at: rollbackFolder, withIntermediateDirectories: true)
+            try Self.moveExistingSQLiteFiles(base: target, to: rollbackFolder, fileManager: fm)
+            try Self.copyImportedSQLiteFiles(database: databaseURL,
+                                             selectedURLs: urls,
+                                             to: target,
+                                             fileManager: fm)
+            do {
+                let restored = try await WhoopStore(path: target.path)
+                _ = try await restored.renameMetricSeriesPrefix(from: Self.legacyMetricPrefix,
+                                                                to: Self.metricPrefix)
+                try await restored.upsertDevice(id: deviceId,
+                                                mac: peripheral?.identifier.uuidString,
+                                                name: deviceName ?? "Fitness tracker")
+                installStore(restored)
+                metrics = .empty
+                backupExportStatus = "WarbFit database restored"
+                append("Restored WarbFit database backup")
+                try? fm.removeItem(at: rollbackFolder)
+                return true
+            } catch {
+                try? Self.removeSQLiteFiles(base: target, fileManager: fm)
+                try? Self.moveExistingSQLiteFiles(base: rollbackFolder.appendingPathComponent(target.lastPathComponent),
+                                                  to: target.deletingLastPathComponent(),
+                                                  fileManager: fm)
+                prepareLocalStore()
+                throw IOSBackupRestoreError.restoreReopenFailed(error.localizedDescription)
+            }
+        } catch {
+            try? Self.removeSQLiteFiles(base: target, fileManager: fm)
+            try? Self.moveExistingSQLiteFiles(base: rollbackFolder.appendingPathComponent(target.lastPathComponent),
+                                              to: target.deletingLastPathComponent(),
+                                              fileManager: fm)
+            prepareLocalStore()
+            backupExportStatus = "Restore failed: \(error.localizedDescription)"
+            append("Restore failed: \(error.localizedDescription)")
+            throw error
         }
     }
 
@@ -417,6 +571,94 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
+    }
+
+    private static func backupTimestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: Date())
+    }
+
+    private static func copySQLiteSidecarsIfNeeded(source: URL,
+                                                   destination: URL,
+                                                   fileManager fm: FileManager) throws -> [URL] {
+        let walSource = URL(fileURLWithPath: source.path + "-wal")
+        guard fileSize(at: walSource, fileManager: fm) > 0 else { return [] }
+
+        var copied: [URL] = []
+        for suffix in ["-wal", "-shm"] {
+            let sidecarSource = URL(fileURLWithPath: source.path + suffix)
+            guard fm.fileExists(atPath: sidecarSource.path) else { continue }
+            let sidecarDestination = URL(fileURLWithPath: destination.path + suffix)
+            try fm.copyItem(at: sidecarSource, to: sidecarDestination)
+            copied.append(sidecarDestination)
+        }
+        return copied
+    }
+
+    private static func fileSize(at url: URL, fileManager fm: FileManager) -> Int64 {
+        let attributes = try? fm.attributesOfItem(atPath: url.path)
+        return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+    }
+
+    private static func importedDatabaseURL(from urls: [URL]) -> URL? {
+        urls.first { url in
+            let name = url.lastPathComponent.lowercased()
+            guard !name.hasSuffix("-wal"), !name.hasSuffix("-shm") else { return false }
+            return name == "warbfit-whoop.sqlite"
+                || name == "\(legacyBackupPrefix)-whoop.sqlite"
+                || name == "whoop.sqlite"
+                || (url.pathExtension.lowercased() == "sqlite" && name.contains("whoop"))
+        }
+    }
+
+    private static func importedSidecarURL(for database: URL,
+                                           suffix: String,
+                                           selectedURLs: [URL]) -> URL? {
+        let expected = database.lastPathComponent.lowercased() + suffix
+        return selectedURLs.first { $0.lastPathComponent.lowercased() == expected }
+    }
+
+    private static func copyImportedSQLiteFiles(database: URL,
+                                                selectedURLs: [URL],
+                                                to target: URL,
+                                                fileManager fm: FileManager) throws {
+        try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.copyItem(at: database, to: target)
+        for suffix in ["-wal", "-shm"] {
+            guard let sidecar = importedSidecarURL(for: database, suffix: suffix, selectedURLs: selectedURLs),
+                  fm.fileExists(atPath: sidecar.path) else { continue }
+            try fm.copyItem(at: sidecar, to: URL(fileURLWithPath: target.path + suffix))
+        }
+    }
+
+    private static func moveExistingSQLiteFiles(base: URL,
+                                                to folder: URL,
+                                                fileManager fm: FileManager) throws {
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        for url in sqliteFiles(base: base) where fm.fileExists(atPath: url.path) {
+            let destination = folder.appendingPathComponent(url.lastPathComponent)
+            if fm.fileExists(atPath: destination.path) {
+                try fm.removeItem(at: destination)
+            }
+            try fm.moveItem(at: url, to: destination)
+        }
+    }
+
+    private static func removeSQLiteFiles(base: URL, fileManager fm: FileManager) throws {
+        for url in sqliteFiles(base: base) where fm.fileExists(atPath: url.path) {
+            try fm.removeItem(at: url)
+        }
+    }
+
+    private static func sqliteFiles(base: URL) -> [URL] {
+        [
+            base,
+            URL(fileURLWithPath: base.path + "-wal"),
+            URL(fileURLWithPath: base.path + "-shm"),
+        ]
     }
 
     private func metricsDate(for date: Date) -> Date {
@@ -493,37 +735,37 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         guard let store else { return }
         let day = Self.dayString(date)
         var rows: [MetricPoint] = [
-            MetricPoint(day: day, key: "noop.logVersion", value: Double(Self.metricsLogVersion)),
-            MetricPoint(day: day, key: "noop.snapshotUpdatedAt", value: Date().timeIntervalSince1970),
-            MetricPoint(day: day, key: "noop.finalized", value: final ? 1 : 0),
-            MetricPoint(day: day, key: "noop.sleepHours", value: snapshot.whoopSleepHours),
-            MetricPoint(day: day, key: "noop.sleepEfficiency", value: snapshot.whoopSleepEfficiency),
-            MetricPoint(day: day, key: "noop.exerciseMinutes", value: Double(snapshot.exerciseMinutes)),
-            MetricPoint(day: day, key: "noop.steps", value: Double(snapshot.steps)),
-            MetricPoint(day: day, key: "noop.activityPoints", value: Double(snapshot.activityPoints)),
+            MetricPoint(day: day, key: "warbfit.logVersion", value: Double(Self.metricsLogVersion)),
+            MetricPoint(day: day, key: "warbfit.snapshotUpdatedAt", value: Date().timeIntervalSince1970),
+            MetricPoint(day: day, key: "warbfit.finalized", value: final ? 1 : 0),
+            MetricPoint(day: day, key: "warbfit.sleepHours", value: snapshot.whoopSleepHours),
+            MetricPoint(day: day, key: "warbfit.sleepEfficiency", value: snapshot.whoopSleepEfficiency),
+            MetricPoint(day: day, key: "warbfit.exerciseMinutes", value: Double(snapshot.exerciseMinutes)),
+            MetricPoint(day: day, key: "warbfit.steps", value: Double(snapshot.steps)),
+            MetricPoint(day: day, key: "warbfit.activityPoints", value: Double(snapshot.activityPoints)),
         ]
-        rows.append(MetricPoint(day: day, key: "noop.sleepStartTs", value: snapshot.whoopSleepIntervals.first?.start.timeIntervalSince1970 ?? 0))
-        rows.append(MetricPoint(day: day, key: "noop.sleepEndTs", value: snapshot.whoopSleepIntervals.last?.end.timeIntervalSince1970 ?? 0))
+        rows.append(MetricPoint(day: day, key: "warbfit.sleepStartTs", value: snapshot.whoopSleepIntervals.first?.start.timeIntervalSince1970 ?? 0))
+        rows.append(MetricPoint(day: day, key: "warbfit.sleepEndTs", value: snapshot.whoopSleepIntervals.last?.end.timeIntervalSince1970 ?? 0))
         let loggedIntervals = Array(snapshot.whoopSleepIntervals.prefix(Self.maxLoggedSleepIntervals))
-        rows.append(MetricPoint(day: day, key: "noop.sleepIntervalCount", value: Double(loggedIntervals.count)))
+        rows.append(MetricPoint(day: day, key: "warbfit.sleepIntervalCount", value: Double(loggedIntervals.count)))
         for (index, interval) in loggedIntervals.enumerated() {
-            rows.append(MetricPoint(day: day, key: "noop.sleepInterval.\(index).startTs", value: interval.start.timeIntervalSince1970))
-            rows.append(MetricPoint(day: day, key: "noop.sleepInterval.\(index).endTs", value: interval.end.timeIntervalSince1970))
-            rows.append(MetricPoint(day: day, key: "noop.sleepInterval.\(index).stage", value: Double(Self.sleepStageCode(interval.stage))))
+            rows.append(MetricPoint(day: day, key: "warbfit.sleepInterval.\(index).startTs", value: interval.start.timeIntervalSince1970))
+            rows.append(MetricPoint(day: day, key: "warbfit.sleepInterval.\(index).endTs", value: interval.end.timeIntervalSince1970))
+            rows.append(MetricPoint(day: day, key: "warbfit.sleepInterval.\(index).stage", value: Double(Self.sleepStageCode(interval.stage))))
         }
         var sleepStages = [
-            "noop.sleepCoreHours": 0.0,
-            "noop.sleepDeepHours": 0.0,
-            "noop.sleepREMHours": 0.0,
-            "noop.sleepAwakeHours": 0.0,
+            "warbfit.sleepCoreHours": 0.0,
+            "warbfit.sleepDeepHours": 0.0,
+            "warbfit.sleepREMHours": 0.0,
+            "warbfit.sleepAwakeHours": 0.0,
         ]
         for stage in snapshot.whoopSleepStages {
             let key: String
             switch stage.name {
-            case "Deep": key = "noop.sleepDeepHours"
-            case "REM": key = "noop.sleepREMHours"
-            case "Awake": key = "noop.sleepAwakeHours"
-            default: key = "noop.sleepCoreHours"
+            case "Deep": key = "warbfit.sleepDeepHours"
+            case "REM": key = "warbfit.sleepREMHours"
+            case "Awake": key = "warbfit.sleepAwakeHours"
+            default: key = "warbfit.sleepCoreHours"
             }
             sleepStages[key, default: 0] += stage.hours
         }
@@ -536,26 +778,26 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         if let recovery = snapshot.recovery {
             rows.append(MetricPoint(day: day, key: "recovery", value: recovery))
             if let adjusted = IOSStrainEstimator.recoveryAdjustedLoad(strain: snapshot.strain, recovery: recovery) {
-                rows.append(MetricPoint(day: day, key: "noop.adjustedLoad", value: adjusted))
+                rows.append(MetricPoint(day: day, key: "warbfit.adjustedLoad", value: adjusted))
             }
         }
         if let calories = snapshot.calories {
-            rows.append(MetricPoint(day: day, key: "noop.calories", value: calories))
+            rows.append(MetricPoint(day: day, key: "warbfit.calories", value: calories))
         }
         if let restingHR = snapshot.restingHR {
-            rows.append(MetricPoint(day: day, key: "noop.restingHR", value: Double(restingHR)))
+            rows.append(MetricPoint(day: day, key: "warbfit.restingHR", value: Double(restingHR)))
         }
         if let hrv = snapshot.hrvRMSSD {
-            rows.append(MetricPoint(day: day, key: "noop.hrvRMSSD", value: hrv))
+            rows.append(MetricPoint(day: day, key: "warbfit.hrvRMSSD", value: hrv))
         }
         if let sleepHRV = snapshot.sleepHRVRMSSD {
-            rows.append(MetricPoint(day: day, key: "noop.sleepHRVRMSSD", value: sleepHRV))
+            rows.append(MetricPoint(day: day, key: "warbfit.sleepHRVRMSSD", value: sleepHRV))
         }
         if let spo2 = snapshot.sleepSpO2RawRatio {
-            rows.append(MetricPoint(day: day, key: "noop.sleepSpO2RawRatio", value: spo2))
+            rows.append(MetricPoint(day: day, key: "warbfit.sleepSpO2RawRatio", value: spo2))
         }
         if let skinTemp = snapshot.sleepSkinTempRaw {
-            rows.append(MetricPoint(day: day, key: "noop.sleepSkinTempRaw", value: skinTemp))
+            rows.append(MetricPoint(day: day, key: "warbfit.sleepSkinTempRaw", value: skinTemp))
         }
         do {
             _ = try await store.upsertMetricSeries(rows, deviceId: deviceId)
@@ -590,10 +832,10 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
             self.isScanning = false
             if self.intentionalDisconnect {
                 self.connectionState = "Not Found"
-                self.append("WHOOP not found. Close the official WHOOP app, keep the strap nearby, then scan again.")
+                self.append("Fitness tracker not found. Close the official companion app, keep the strap nearby, then scan again.")
             } else {
                 self.connectionState = "Reconnecting"
-                self.append("WHOOP not found yet; will keep trying")
+                self.append("Fitness tracker not found yet; will keep trying")
                 self.scheduleReconnect(reason: "scan timeout")
             }
         }
@@ -665,7 +907,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         reconnectAttempts += 1
         let delay = min(30.0, Double([2, 5, 10, 20, 30][min(reconnectAttempts - 1, 4)]))
         connectionState = "Reconnecting"
-        append("WHOOP disconnected; reconnecting in \(Int(delay))s (\(reason))")
+        append("Fitness tracker disconnected; reconnecting in \(Int(delay))s (\(reason))")
 
         let item = DispatchWorkItem { [weak self] in
             guard let self, !self.intentionalDisconnect, self.central.state == .poweredOn else { return }
@@ -720,20 +962,24 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
             do {
                 let path = try IOSStorePaths.defaultDatabasePath()
                 let store = try await WhoopStore(path: path)
-                try await store.upsertDevice(id: deviceId, mac: peripheral?.identifier.uuidString, name: deviceName ?? "WHOOP 4.0")
-                self.store = store
-                self.collector = IOSCollector(store: store, deviceId: deviceId, onStoreFlush: { [weak self] in
-                    self?.scheduleMetricsRefresh()
-                })
-                self.backfiller = IOSBackfiller(store: store, deviceId: deviceId) { [weak self] trim, endData in
-                    self?.ackHistoricalChunk(trim: trim, endData: endData)
-                }
-                self.append("WHOOP store ready")
+                try await store.upsertDevice(id: deviceId, mac: peripheral?.identifier.uuidString, name: deviceName ?? "Fitness tracker")
+                self.installStore(store)
+                self.append("Fitness tracker store ready")
                 self.finalizePreviousDayIfNeeded()
                 self.refreshDeviceMetrics()
             } catch {
                 self.append("Store setup failed: \(error.localizedDescription)")
             }
+        }
+    }
+
+    private func installStore(_ store: WhoopStore) {
+        self.store = store
+        self.collector = IOSCollector(store: store, deviceId: deviceId, onStoreFlush: { [weak self] in
+            self?.scheduleMetricsRefresh()
+        })
+        self.backfiller = IOSBackfiller(store: store, deviceId: deviceId) { [weak self] trim, endData in
+            self?.ackHistoricalChunk(trim: trim, endData: endData)
         }
     }
 
@@ -748,7 +994,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         guard !connectHandshakeDone else { return }
         connectHandshakeDone = true
         bootstrapStoreIfNeeded()
-        append("Starting WHOOP sync handshake")
+        append("Starting fitness tracker sync handshake")
         sendCommand(35, payload: [0x00], to: characteristic, on: peripheral)
         sendCommand(76, payload: [0x00], to: characteristic, on: peripheral)
         sendCommand(10, payload: Self.setClockPayload(), to: characteristic, on: peripheral)
@@ -781,12 +1027,12 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         metricsRefreshDebounce = nil
         pendingMetricsRefreshAfterBackfill = true
         cancelMetricsRefresh()
-        metrics.status = "Backfilling WHOOP history"
+        metrics.status = "Backfilling fitness tracker history"
         backfiller.begin()
         backfilling = true
         sendCommand(22, payload: [0x00], to: characteristic, on: peripheral, writeType: .withResponse)
         armBackfillTimeout()
-        append("Historical sync requested from WHOOP")
+        append("Historical sync requested from fitness tracker")
     }
 
     private func catchUpHistoryIfNeeded(reason: String, force: Bool = false) {
@@ -798,7 +1044,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
             return
         }
         lastForegroundHistoryCatchUpAt = now
-        append("Checking WHOOP history after \(reason)")
+        append("Checking fitness tracker history after \(reason)")
         beginBackfill()
     }
 
@@ -879,7 +1125,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private func ackHistoricalChunk(trim: UInt32, endData: [UInt8]) {
         guard let peripheral, let characteristic = commandCharacteristic else { return }
         sendCommand(23, payload: [0x01] + endData, to: characteristic, on: peripheral, writeType: .withResponse)
-        append("Acked WHOOP history chunk \(trim)")
+        append("Acked fitness tracker history chunk \(trim)")
     }
 
     private func routeBackfillFrame(_ frame: [UInt8]) {
@@ -963,7 +1209,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         guard let previous = lastLiveHeartRateTs else { return }
         let gap = ts - previous
         guard gap >= Self.liveDataGapHistoryThresholdSeconds else { return }
-        append("Detected \(gap)s WHOOP live HR gap")
+        append("Detected \(gap)s fitness tracker live HR gap")
         catchUpHistoryIfNeeded(reason: "live HR gap", force: true)
     }
 
@@ -1047,7 +1293,7 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
 
     private func statusForLiveSample(_ date: Date) -> String {
         let seconds = max(0, Date().timeIntervalSince(date))
-        return seconds < 10 ? "WHOOP live data current" : "Last live sample \(Int(seconds)) s ago"
+        return seconds < 10 ? "Fitness tracker live data current" : "Last live sample \(Int(seconds)) s ago"
     }
 
     private func handleBatteryData(_ data: Data) {

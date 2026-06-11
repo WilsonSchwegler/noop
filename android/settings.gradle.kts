@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "NOOP"
+rootProject.name = "WarbFit"
 include(":app")

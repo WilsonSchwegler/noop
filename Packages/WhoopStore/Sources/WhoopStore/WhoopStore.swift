@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 import WhoopProtocol
 
-/// OpenWhoop persistence library — decoded streams are durable; raw frames are a
+/// WarbFit persistence library — decoded streams are durable; raw frames are a
 /// transient, compressed, prunable outbox. Built on GRDB/SQLite.
 public enum WhoopStoreInfo {
     /// Bumped whenever the migrator gains a new migration.

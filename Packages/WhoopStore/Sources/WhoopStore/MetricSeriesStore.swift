@@ -84,4 +84,37 @@ extension WhoopStore {
             return (earliest, latest)
         }
     }
+
+    /// Renames a metric key namespace in-place, preserving values and updating conflicting
+    /// destination rows to the imported value. Used by app-level backup migration when old local
+    /// backup databases are restored into a renamed app.
+    @discardableResult
+    public func renameMetricSeriesPrefix(from oldPrefix: String, to newPrefix: String) async throws -> Int {
+        guard !oldPrefix.isEmpty, oldPrefix != newPrefix else { return 0 }
+        return try syncWrite { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT deviceId, day, key, value FROM metricSeries
+                WHERE key LIKE ?
+                """, arguments: [oldPrefix + "%"])
+            for row in rows {
+                let oldKey: String = row["key"]
+                let suffix = String(oldKey.dropFirst(oldPrefix.count))
+                try db.execute(sql: """
+                    INSERT INTO metricSeries
+                        (deviceId, day, key, value)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(deviceId, day, key) DO UPDATE SET
+                        value = excluded.value
+                    """, arguments: [
+                        row["deviceId"] as String,
+                        row["day"] as String,
+                        newPrefix + suffix,
+                        row["value"] as Double,
+                    ])
+            }
+            try db.execute(sql: "DELETE FROM metricSeries WHERE key LIKE ?",
+                           arguments: [oldPrefix + "%"])
+            return rows.count
+        }
+    }
 }

@@ -5,7 +5,7 @@ import WhoopStore
 
 struct IOSLoadGuidance: Equatable {
     var title = "Building baseline"
-    var detail = "Collect more WHOOP strain history for training-load guidance."
+    var detail = "Collect more fitness tracker strain history for training-load guidance."
     var acwr: Double?
     var targetLow: Double?
     var targetHigh: Double?
@@ -32,12 +32,12 @@ struct IOSMetricHRSample: Identifiable, Equatable {
 }
 
 struct IOSWhoopDeviceSnapshot: Equatable {
-    var status = "Waiting for WHOOP data"
+    var status = "Waiting for fitness tracker data"
     var decodedRows = 0
     var latestSampleAt: Date?
     var strain: Double?
     var recovery: Double?
-    var recoveryStatus = "Calibrating from WHOOP nights"
+    var recoveryStatus = "Calibrating from fitness tracker nights"
     var restingHR: Int?
     var hrvRMSSD: Double?
     var sleepHRVRMSSD: Double?
@@ -45,13 +45,13 @@ struct IOSWhoopDeviceSnapshot: Equatable {
     var whoopSleepEfficiency = 0.0
     var whoopSleepStages: [IOSSleepStageSummary] = []
     var whoopSleepIntervals: [IOSSleepInterval] = []
-    var whoopSleepStatus = "Waiting for overnight WHOOP HR"
+    var whoopSleepStatus = "Waiting for overnight fitness tracker HR"
     var sleepSpO2RawRatio: Double?
     var sleepSkinTempRaw: Double?
     var calories: Double?
     var exerciseMinutes = 0
     var steps = 0
-    var stepsSource = "Estimated from WHOOP motion"
+    var stepsSource = "Estimated from fitness tracker motion"
     var activityPoints = 0
     var workouts: [IOSDeviceWorkout] = []
     var todayHRSamples: [IOSMetricHRSample] = []
@@ -75,8 +75,8 @@ enum IOSWhoopDeviceMetrics {
         let selectedEnd = Int(selectedEndDate.timeIntervalSince1970)
         let selectedDay = dayString(selectedStartDate, calendar: calendar)
         let values = try await loggedMetrics(store: store, deviceId: deviceId, day: selectedDay)
-        guard Int(values["noop.logVersion"] ?? 0) >= dailyLogVersion else { return nil }
-        guard values["noop.finalized"] == 1 || values["noop.snapshotUpdatedAt"] != nil else { return nil }
+        guard Int(values["warbfit.logVersion"] ?? 0) >= dailyLogVersion else { return nil }
+        guard values["warbfit.finalized"] == 1 || values["warbfit.snapshotUpdatedAt"] != nil else { return nil }
         let stats = try await store.storageStats()
         let latest = try await store.latestHRSampleTs(deviceId: deviceId)
         let hr = try await store.hrSamples(deviceId: deviceId, from: selectedStart, to: selectedEnd, limit: 120_000)
@@ -112,8 +112,8 @@ enum IOSWhoopDeviceMetrics {
         let todayGravity = try await store.gravitySamples(deviceId: deviceId, from: todayStart, to: selectedEnd, limit: 120_000)
         let selectedDay = dayString(selectedStartDate, calendar: calendar)
         let loggedMetrics = try await loggedMetrics(store: store, deviceId: deviceId, day: selectedDay)
-        let hasCurrentLoggedMetrics = Int(loggedMetrics["noop.logVersion"] ?? 0) >= dailyLogVersion
-        if !selectedDayIsToday, hasCurrentLoggedMetrics, loggedMetrics["noop.finalized"] == 1 {
+        let hasCurrentLoggedMetrics = Int(loggedMetrics["warbfit.logVersion"] ?? 0) >= dailyLogVersion
+        if !selectedDayIsToday, hasCurrentLoggedMetrics, loggedMetrics["warbfit.finalized"] == 1 {
             var snapshot = loggedSnapshot(
                 values: loggedMetrics,
                 stats: stats,
@@ -136,7 +136,7 @@ enum IOSWhoopDeviceMetrics {
         let historyGravity = try await store.gravitySamples(deviceId: deviceId, from: lookbackStart, to: nowTs, limit: 350_000)
         let historySpO2 = try await store.spo2Samples(deviceId: deviceId, from: lookbackStart, to: nowTs, limit: 350_000)
         let historySkinTemp = try await store.skinTempSamples(deviceId: deviceId, from: lookbackStart, to: nowTs, limit: 350_000)
-        var storedSteps = loggedMetrics["noop.steps"] ?? loggedMetrics["steps"]
+        var storedSteps = loggedMetrics["warbfit.steps"] ?? loggedMetrics["steps"]
         if storedSteps == nil {
             storedSteps = try await store.metricSeries(deviceId: deviceId, key: "steps", from: selectedDay, to: selectedDay).last?.value
         }
@@ -298,38 +298,38 @@ enum IOSWhoopDeviceMetrics {
 
     private static func loggedMetrics(store: WhoopStore, deviceId: String, day: String) async throws -> [String: Double] {
         var keys = [
-            "noop.logVersion",
-            "noop.snapshotUpdatedAt",
-            "noop.finalized",
+            "warbfit.logVersion",
+            "warbfit.snapshotUpdatedAt",
+            "warbfit.finalized",
             "strain",
             "recovery",
-            "noop.adjustedLoad",
-            "noop.sleepHours",
-            "noop.sleepEfficiency",
-            "noop.sleepStartTs",
-            "noop.sleepEndTs",
-            "noop.sleepIntervalCount",
-            "noop.sleepManualStartTs",
-            "noop.sleepManualEndTs",
-            "noop.sleepManualUpdatedAt",
-            "noop.sleepCoreHours",
-            "noop.sleepDeepHours",
-            "noop.sleepREMHours",
-            "noop.sleepAwakeHours",
-            "noop.exerciseMinutes",
-            "noop.steps",
-            "noop.activityPoints",
-            "noop.calories",
-            "noop.restingHR",
-            "noop.hrvRMSSD",
-            "noop.sleepHRVRMSSD",
-            "noop.sleepSpO2RawRatio",
-            "noop.sleepSkinTempRaw",
+            "warbfit.adjustedLoad",
+            "warbfit.sleepHours",
+            "warbfit.sleepEfficiency",
+            "warbfit.sleepStartTs",
+            "warbfit.sleepEndTs",
+            "warbfit.sleepIntervalCount",
+            "warbfit.sleepManualStartTs",
+            "warbfit.sleepManualEndTs",
+            "warbfit.sleepManualUpdatedAt",
+            "warbfit.sleepCoreHours",
+            "warbfit.sleepDeepHours",
+            "warbfit.sleepREMHours",
+            "warbfit.sleepAwakeHours",
+            "warbfit.exerciseMinutes",
+            "warbfit.steps",
+            "warbfit.activityPoints",
+            "warbfit.calories",
+            "warbfit.restingHR",
+            "warbfit.hrvRMSSD",
+            "warbfit.sleepHRVRMSSD",
+            "warbfit.sleepSpO2RawRatio",
+            "warbfit.sleepSkinTempRaw",
         ]
         for index in 0..<maxLoggedSleepIntervals {
-            keys.append("noop.sleepInterval.\(index).startTs")
-            keys.append("noop.sleepInterval.\(index).endTs")
-            keys.append("noop.sleepInterval.\(index).stage")
+            keys.append("warbfit.sleepInterval.\(index).startTs")
+            keys.append("warbfit.sleepInterval.\(index).endTs")
+            keys.append("warbfit.sleepInterval.\(index).stage")
         }
         var values: [String: Double] = [:]
         for key in keys {
@@ -352,41 +352,41 @@ enum IOSWhoopDeviceMetrics {
         }
         snapshot.dailyHRSamples = snapshot.todayHRSamples
         applyLoggedMetrics(values, to: &snapshot)
-        snapshot.status = values["noop.finalized"] == 1 ? "Final logged metrics" : "Logged metrics snapshot"
+        snapshot.status = values["warbfit.finalized"] == 1 ? "Final logged metrics" : "Logged metrics snapshot"
         return snapshot
     }
 
     private static func applyLoggedMetrics(_ values: [String: Double], to snapshot: inout IOSWhoopDeviceSnapshot) {
         if let strain = values["strain"] { snapshot.strain = strain }
         if let recovery = values["recovery"] { snapshot.recovery = recovery }
-        if let sleepHours = values["noop.sleepHours"] { snapshot.whoopSleepHours = sleepHours }
-        if let sleepEfficiency = values["noop.sleepEfficiency"] { snapshot.whoopSleepEfficiency = sleepEfficiency }
+        if let sleepHours = values["warbfit.sleepHours"] { snapshot.whoopSleepHours = sleepHours }
+        if let sleepEfficiency = values["warbfit.sleepEfficiency"] { snapshot.whoopSleepEfficiency = sleepEfficiency }
         applyLoggedSleep(values, to: &snapshot)
-        if let exerciseMinutes = values["noop.exerciseMinutes"] { snapshot.exerciseMinutes = max(0, Int(exerciseMinutes.rounded())) }
-        if let steps = values["noop.steps"] {
+        if let exerciseMinutes = values["warbfit.exerciseMinutes"] { snapshot.exerciseMinutes = max(0, Int(exerciseMinutes.rounded())) }
+        if let steps = values["warbfit.steps"] {
             snapshot.steps = max(0, Int(steps.rounded()))
             snapshot.stepsSource = "Logged daily snapshot"
         }
-        if let activityPoints = values["noop.activityPoints"] { snapshot.activityPoints = max(0, Int(activityPoints.rounded())) }
-        if let calories = values["noop.calories"] { snapshot.calories = calories }
-        if let restingHR = values["noop.restingHR"] { snapshot.restingHR = max(0, Int(restingHR.rounded())) }
-        if let hrv = values["noop.hrvRMSSD"] { snapshot.hrvRMSSD = hrv }
-        if let sleepHRV = values["noop.sleepHRVRMSSD"] { snapshot.sleepHRVRMSSD = sleepHRV }
-        if let spo2 = values["noop.sleepSpO2RawRatio"] { snapshot.sleepSpO2RawRatio = spo2 }
-        if let skinTemp = values["noop.sleepSkinTempRaw"] { snapshot.sleepSkinTempRaw = skinTemp }
-        if values["noop.finalized"] == 1 {
+        if let activityPoints = values["warbfit.activityPoints"] { snapshot.activityPoints = max(0, Int(activityPoints.rounded())) }
+        if let calories = values["warbfit.calories"] { snapshot.calories = calories }
+        if let restingHR = values["warbfit.restingHR"] { snapshot.restingHR = max(0, Int(restingHR.rounded())) }
+        if let hrv = values["warbfit.hrvRMSSD"] { snapshot.hrvRMSSD = hrv }
+        if let sleepHRV = values["warbfit.sleepHRVRMSSD"] { snapshot.sleepHRVRMSSD = sleepHRV }
+        if let spo2 = values["warbfit.sleepSpO2RawRatio"] { snapshot.sleepSpO2RawRatio = spo2 }
+        if let skinTemp = values["warbfit.sleepSkinTempRaw"] { snapshot.sleepSkinTempRaw = skinTemp }
+        if values["warbfit.finalized"] == 1 {
             snapshot.status = "Final logged metrics"
-        } else if values["noop.snapshotUpdatedAt"] != nil {
+        } else if values["warbfit.snapshotUpdatedAt"] != nil {
             snapshot.status = "Logged metrics snapshot"
         }
     }
 
     private static func applyLoggedSleep(_ values: [String: Double], to snapshot: inout IOSWhoopDeviceSnapshot) {
         let stagePairs: [(String, String)] = [
-            ("Core", "noop.sleepCoreHours"),
-            ("Deep", "noop.sleepDeepHours"),
-            ("REM", "noop.sleepREMHours"),
-            ("Awake", "noop.sleepAwakeHours"),
+            ("Core", "warbfit.sleepCoreHours"),
+            ("Deep", "warbfit.sleepDeepHours"),
+            ("REM", "warbfit.sleepREMHours"),
+            ("Awake", "warbfit.sleepAwakeHours"),
         ]
         snapshot.whoopSleepStages = stagePairs.compactMap { name, key in
             guard let hours = values[key], hours > 0.01 else { return nil }
@@ -400,8 +400,8 @@ enum IOSWhoopDeviceMetrics {
             snapshot.whoopSleepStatus = "Logged sleep snapshot"
             return
         }
-        guard let start = values["noop.sleepStartTs"],
-              let end = values["noop.sleepEndTs"],
+        guard let start = values["warbfit.sleepStartTs"],
+              let end = values["warbfit.sleepEndTs"],
               end > start else { return }
         if snapshot.whoopSleepStages.isEmpty, snapshot.whoopSleepHours > 0 {
             snapshot.whoopSleepStages = [IOSSleepStageSummary(name: "Core", hours: snapshot.whoopSleepHours)]
@@ -423,12 +423,12 @@ enum IOSWhoopDeviceMetrics {
     }
 
     private static func loggedSleepIntervals(from values: [String: Double]) -> [IOSSleepInterval]? {
-        let count = min(max(0, Int((values["noop.sleepIntervalCount"] ?? 0).rounded())), maxLoggedSleepIntervals)
+        let count = min(max(0, Int((values["warbfit.sleepIntervalCount"] ?? 0).rounded())), maxLoggedSleepIntervals)
         guard count > 0 else { return nil }
         let intervals = (0..<count).compactMap { index -> IOSSleepInterval? in
-            guard let start = values["noop.sleepInterval.\(index).startTs"],
-                  let end = values["noop.sleepInterval.\(index).endTs"],
-                  let stageCode = values["noop.sleepInterval.\(index).stage"],
+            guard let start = values["warbfit.sleepInterval.\(index).startTs"],
+                  let end = values["warbfit.sleepInterval.\(index).endTs"],
+                  let stageCode = values["warbfit.sleepInterval.\(index).stage"],
                   end > start else { return nil }
             return IOSSleepInterval(
                 start: Date(timeIntervalSince1970: start),
@@ -449,13 +449,13 @@ enum IOSWhoopDeviceMetrics {
     }
 
     private static func loggedSleepSummary(from values: [String: Double]) -> (hours: Double, efficiency: Double, stages: [IOSSleepStageSummary], intervals: [IOSSleepInterval], status: String)? {
-        guard let start = values["noop.sleepStartTs"],
-              let end = values["noop.sleepEndTs"],
+        guard let start = values["warbfit.sleepStartTs"],
+              let end = values["warbfit.sleepEndTs"],
               start > 0,
               end > start else { return nil }
         var snapshot = IOSWhoopDeviceSnapshot()
-        snapshot.whoopSleepHours = max(0, values["noop.sleepHours"] ?? 0)
-        snapshot.whoopSleepEfficiency = max(0, min(1, values["noop.sleepEfficiency"] ?? 0))
+        snapshot.whoopSleepHours = max(0, values["warbfit.sleepHours"] ?? 0)
+        snapshot.whoopSleepEfficiency = max(0, min(1, values["warbfit.sleepEfficiency"] ?? 0))
         applyLoggedSleep(values, to: &snapshot)
         guard !snapshot.whoopSleepIntervals.isEmpty else { return nil }
         let hours = snapshot.whoopSleepHours > 0
@@ -466,15 +466,15 @@ enum IOSWhoopDeviceMetrics {
         let efficiency = snapshot.whoopSleepEfficiency > 0
             ? snapshot.whoopSleepEfficiency
             : min(1.0, max(0.0, hours / max((end - start) / 3600.0, 0.1)))
-        let status = (values["noop.sleepManualUpdatedAt"] ?? 0) > 0
+        let status = (values["warbfit.sleepManualUpdatedAt"] ?? 0) > 0
             ? "Adjusted sleep window"
             : "Logged sleep snapshot"
         return (hours, efficiency, snapshot.whoopSleepStages, snapshot.whoopSleepIntervals, status)
     }
 
     private static func manualSleepWindow(from values: [String: Double]) -> (start: Int, end: Int)? {
-        guard let start = values["noop.sleepManualStartTs"],
-              let end = values["noop.sleepManualEndTs"],
+        guard let start = values["warbfit.sleepManualStartTs"],
+              let end = values["warbfit.sleepManualEndTs"],
               start > 0,
               end - start >= 30 * 60 else { return nil }
         return (Int(start.rounded()), Int(end.rounded()))
@@ -515,10 +515,10 @@ enum IOSWhoopDeviceMetrics {
 
     private static func loggedRecoveryParts(from values: [String: Double]) -> (score: Double?, status: String, restingHR: Int?, hrv: Double?, spo2RawRatio: Double?, skinTempRaw: Double?)? {
         guard let recovery = values["recovery"] else { return nil }
-        let restingHR = values["noop.restingHR"].map { max(0, Int($0.rounded())) }
-        let hrv = values["noop.hrvRMSSD"]
-        let spo2 = values["noop.sleepSpO2RawRatio"]
-        let skinTemp = values["noop.sleepSkinTempRaw"]
+        let restingHR = values["warbfit.restingHR"].map { max(0, Int($0.rounded())) }
+        let hrv = values["warbfit.hrvRMSSD"]
+        let spo2 = values["warbfit.sleepSpO2RawRatio"]
+        let skinTemp = values["warbfit.sleepSkinTempRaw"]
         return (
             recovery,
             "Logged recovery snapshot from saved sleep window",
@@ -530,12 +530,12 @@ enum IOSWhoopDeviceMetrics {
     }
 
     private static func status(decodedRows: Int, latest: Date?) -> String {
-        guard decodedRows > 0 else { return "No WHOOP samples stored yet" }
-        guard let latest else { return "\(decodedRows) WHOOP rows stored" }
+        guard decodedRows > 0 else { return "No fitness tracker samples stored yet" }
+        guard let latest else { return "\(decodedRows) fitness tracker rows stored" }
         let age = max(0, Date().timeIntervalSince(latest))
-        if age < 10 * 60 { return "WHOOP data current" }
-        if age < 2 * 3600 { return "Last WHOOP sample \(Int(age / 60)) min ago" }
-        return "Last WHOOP sample \(Int(age / 3600)) h ago"
+        if age < 10 * 60 { return "Fitness tracker data current" }
+        if age < 2 * 3600 { return "Last fitness tracker sample \(Int(age / 60)) min ago" }
+        return "Last fitness tracker sample \(Int(age / 3600)) h ago"
     }
 
     private static func restingHR(from hr: [HRSample]) -> Int? {
@@ -596,7 +596,7 @@ enum IOSWhoopDeviceMetrics {
         }
         let stagedSegments = primaryOvernightSegments(from: selectedSessions)
         if !stagedSegments.isEmpty {
-            return sleepSummary(from: stagedSegments, status: "WHOOP staged sleep from HR/R-R/motion")
+            return sleepSummary(from: stagedSegments, status: "Fitness tracker staged sleep from HR/R-R/motion")
         }
 
         return estimatedOvernightSleepSummary(
@@ -787,7 +787,7 @@ enum IOSWhoopDeviceMetrics {
             rr: rr,
             resp: resp,
             gravity: gravity,
-            statusPrefix: "Estimated overnight WHOOP sleep"
+            statusPrefix: "Estimated overnight fitness tracker sleep"
         )
         let intervals = staged.intervals
         let summary = summarize(intervals: intervals)
@@ -827,7 +827,7 @@ enum IOSWhoopDeviceMetrics {
             )
             let summary = sleepSummary(
                 from: segments,
-                status: "\(statusPrefix) staged from WHOOP \(sleepInputDescription(hr: windowHR, rr: windowRR, resp: windowResp, gravity: windowGravity))"
+                status: "\(statusPrefix) staged from fitness tracker \(sleepInputDescription(hr: windowHR, rr: windowRR, resp: windowResp, gravity: windowGravity))"
             )
             if !summary.intervals.isEmpty {
                 return (summary.intervals, summary.status)
@@ -842,7 +842,7 @@ enum IOSWhoopDeviceMetrics {
             fallbackStage: "Core"
         )
         let inputText = windowRR.count >= 20 ? "HR/R-R only" : "HR only"
-        return (intervals, "\(statusPrefix) estimated from WHOOP \(inputText); stage confidence is lower without motion coverage")
+        return (intervals, "\(statusPrefix) estimated from fitness tracker \(inputText); stage confidence is lower without motion coverage")
     }
 
     private static func sleepInputDescription(hr: [HRSample],
@@ -1080,7 +1080,7 @@ enum IOSWhoopDeviceMetrics {
         let sleepPerf = sleepPerformance(summary: sleepSummary)
 
         guard let currentHRV, let currentRHR else {
-            return (nil, "Waiting for overnight WHOOP R-R and HR data", currentRHR, currentHRV, currentSpO2Raw, currentSkinRaw)
+            return (nil, "Waiting for overnight fitness tracker R-R and HR data", currentRHR, currentHRV, currentSpO2Raw, currentSkinRaw)
         }
 
         let score = RecoveryScorer.recovery(
@@ -1103,7 +1103,7 @@ enum IOSWhoopDeviceMetrics {
             )
             return (
                 provisional,
-                "Provisional NOOP recovery while WHOOP baseline calibrates \(hrvBaseline.nValid)/\(Baselines.minNightsSeed) nights",
+                "Provisional WarbFit recovery while fitness tracker baseline calibrates \(hrvBaseline.nValid)/\(Baselines.minNightsSeed) nights",
                 currentRHR,
                 currentHRV,
                 currentSpO2Raw,
@@ -1117,7 +1117,7 @@ enum IOSWhoopDeviceMetrics {
             .compactMap { $0 }
             .joined(separator: ", ")
         let suffix = rawText.isEmpty ? "" : " (\(rawText))"
-        return (score, "NOOP recovery from WHOOP sleep, HRV/RHR\(respText)\(loadText)\(illnessText)\(suffix)", currentRHR, currentHRV, currentSpO2Raw, currentSkinRaw)
+        return (score, "WarbFit recovery from fitness tracker sleep, HRV/RHR\(respText)\(loadText)\(illnessText)\(suffix)", currentRHR, currentHRV, currentSpO2Raw, currentSkinRaw)
     }
 
     private static func sleepPerformance(summary: (hours: Double, efficiency: Double, stages: [IOSSleepStageSummary], intervals: [IOSSleepInterval], status: String)) -> Double? {

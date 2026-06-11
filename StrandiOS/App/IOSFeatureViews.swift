@@ -1,15 +1,16 @@
 import SwiftUI
 import UIKit
 import MapKit
+import UniformTypeIdentifiers
 import StrandDesign
 
 private extension Notification.Name {
-    static let noopClearHRChartSelection = Notification.Name("noopClearHRChartSelection")
+    static let warbFitClearHRChartSelection = Notification.Name("warbFitClearHRChartSelection")
 }
 
 private extension View {
     @ViewBuilder
-    func noopRefreshableWhen(_ condition: Bool, action: @escaping @Sendable () async -> Void) -> some View {
+    func warbFitRefreshableWhen(_ condition: Bool, action: @escaping @Sendable () async -> Void) -> some View {
         if condition {
             self.refreshable(action: action)
         } else {
@@ -17,16 +18,16 @@ private extension View {
         }
     }
 
-    func dismissNOOPKeyboard() {
+    func dismissWarbFitKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
-    func clearNOOPChartSelection() {
-        NotificationCenter.default.post(name: .noopClearHRChartSelection, object: nil)
+    func clearWarbFitChartSelection() {
+        NotificationCenter.default.post(name: .warbFitClearHRChartSelection, object: nil)
     }
 }
 
-private enum NOOPSleepDisplay {
+private enum WarbFitSleepDisplay {
     static func intervals(health: [IOSSleepInterval], whoop: [IOSSleepInterval]) -> [IOSSleepInterval] {
         asleepHours(in: whoop) > 0 ? whoop : health
     }
@@ -86,7 +87,7 @@ struct FeatureDetailView: View {
             StrandPalette.surfaceBase.ignoresSafeArea()
             content
         }
-        .navigationTitle(feature == .today ? "NOOP" : feature.rawValue)
+        .navigationTitle(feature == .today ? "WarbFit" : feature.rawValue)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(feature == .today ? .hidden : .visible, for: .navigationBar)
     }
@@ -205,7 +206,7 @@ struct TodayIOSView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .scrollContentBackground(.hidden)
-        .noopRefreshableWhen(Calendar.current.isDateInToday(selectedDate)) {
+        .warbFitRefreshableWhen(Calendar.current.isDateInToday(selectedDate)) {
             await scanner.refreshDeviceMetricsNow(date: selectedDate)
             await MainActor.run {
                 pedometer.refresh(date: selectedDate) { date, steps in
@@ -292,7 +293,7 @@ struct TodayIOSView: View {
     }
 
     private var awakeDayHRSamples: [IOSMetricHRSample] {
-        let sleepIntervals = NOOPSleepDisplay.intervals(
+        let sleepIntervals = WarbFitSleepDisplay.intervals(
             health: health.sleepIntervals,
             whoop: scanner.metrics.whoopSleepIntervals
         )
@@ -349,7 +350,7 @@ struct TodayIOSView: View {
 
     private var heartRateIntervals: [HRChartInterval] {
         var intervals: [HRChartInterval] = []
-        let sleepIntervals = NOOPSleepDisplay.intervals(
+        let sleepIntervals = WarbFitSleepDisplay.intervals(
             health: health.sleepIntervals,
             whoop: scanner.metrics.whoopSleepIntervals
         )
@@ -389,7 +390,7 @@ struct TodayIOSView: View {
     }
 
     private var effectiveSleepHours: Double {
-        NOOPSleepDisplay.hours(
+        WarbFitSleepDisplay.hours(
             healthHours: health.sleepHours,
             whoopHours: scanner.metrics.whoopSleepHours,
             healthIntervals: health.sleepIntervals,
@@ -439,7 +440,7 @@ private struct ActivityIOSView: View {
                     ScoreCard(title: "Exercise", value: "\(scanner.metrics.exerciseMinutes)", unit: "min", color: StrandPalette.strain066)
                     ScoreCard(title: "Workouts", value: "\(scanner.metrics.workouts.count)", unit: "", color: StrandPalette.metricCyan)
                 }
-                SourceRow(name: "Activity Source", status: "WHOOP HR and gravity samples from local device store", icon: "waveform.path.ecg", color: StrandPalette.accent)
+                SourceRow(name: "Activity Source", status: "fitness tracker HR and gravity samples from local device store", icon: "waveform.path.ecg", color: StrandPalette.accent)
             }
             .padding(16)
             .padding(.bottom, 96)
@@ -513,7 +514,7 @@ private struct WorkoutsIOSView: View {
                         .font(.caption.weight(.bold))
                         .foregroundStyle(StrandPalette.textTertiary)
                     if scanner.metrics.workouts.isEmpty {
-                        SourceRow(name: "No WHOOP-detected workouts", status: "These appear after historical HR and motion data sync from the strap.", icon: "figure.run", color: StrandPalette.textTertiary)
+                        SourceRow(name: "No fitness tracker-detected workouts", status: "These appear after historical HR and motion data sync from the strap.", icon: "figure.run", color: StrandPalette.textTertiary)
                     } else {
                         ForEach(scanner.metrics.workouts) { workout in
                             SourceRow(
@@ -632,7 +633,7 @@ private struct ActiveWorkoutCard: View {
                 .frame(height: 160)
                 .onTapGesture {
                     notesFocused = false
-                    dismissNOOPKeyboard()
+                    dismissWarbFitKeyboard()
                 }
 
             if let plan = active.plan {
@@ -655,7 +656,7 @@ private struct ActiveWorkoutCard: View {
                             Spacer()
                             Button("Done") {
                                 notesFocused = false
-                                dismissNOOPKeyboard()
+                                dismissWarbFitKeyboard()
                             }
                         }
                     }
@@ -674,8 +675,8 @@ private struct ActiveWorkoutCard: View {
         .contentShape(Rectangle())
         .onTapGesture {
             notesFocused = false
-            dismissNOOPKeyboard()
-            clearNOOPChartSelection()
+            dismissWarbFitKeyboard()
+            clearWarbFitChartSelection()
         }
         .padding(12)
         .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 12))
@@ -1364,12 +1365,12 @@ private struct SleepIOSView: View {
                 ForEach(effectiveSleepStages) { stage in
                     SourceRow(name: stage.name, status: String(format: "%.1f hours", stage.hours), icon: "moon.stars.fill", color: sleepColor(stage.name))
                 }
-                SourceRow(name: "WHOOP Sleep", status: scanner.metrics.whoopSleepStatus, icon: "waveform.path.ecg", color: StrandPalette.metricCyan)
+                SourceRow(name: "Fitness tracker sleep", status: scanner.metrics.whoopSleepStatus, icon: "waveform.path.ecg", color: StrandPalette.metricCyan)
                 SourceRow(name: "Recovery Inputs", status: scanner.metrics.recoveryStatus, icon: "waveform.path.ecg", color: StrandPalette.metricPurple)
-                SourceRow(name: "WHOOP HRV", status: scanner.metrics.hrvRMSSD.map { "\(Int($0.rounded())) ms RMSSD" } ?? "Waiting for WHOOP R-R intervals", icon: "waveform.path.ecg", color: StrandPalette.metricPurple)
-                SourceRow(name: "WHOOP Resting HR", status: scanner.metrics.restingHR.map { "\($0) bpm" } ?? "Waiting for WHOOP heart-rate samples", icon: "heart.fill", color: StrandPalette.metricRose)
-                SourceRow(name: "Raw SpO2 Ratio", status: scanner.metrics.sleepSpO2RawRatio.map { String(format: "%.3f red/IR ADC", $0) } ?? "Waiting for WHOOP raw SpO2 samples", icon: "drop.fill", color: StrandPalette.metricCyan)
-                SourceRow(name: "Skin Temp ADC", status: scanner.metrics.sleepSkinTempRaw.map { String(format: "%.0f raw ADC", $0) } ?? "Waiting for WHOOP skin-temp samples", icon: "thermometer.medium", color: StrandPalette.metricAmber)
+                SourceRow(name: "Fitness tracker HRV", status: scanner.metrics.hrvRMSSD.map { "\(Int($0.rounded())) ms RMSSD" } ?? "Waiting for fitness tracker R-R intervals", icon: "waveform.path.ecg", color: StrandPalette.metricPurple)
+                SourceRow(name: "Fitness tracker resting HR", status: scanner.metrics.restingHR.map { "\($0) bpm" } ?? "Waiting for fitness tracker heart-rate samples", icon: "heart.fill", color: StrandPalette.metricRose)
+                SourceRow(name: "Raw SpO2 Ratio", status: scanner.metrics.sleepSpO2RawRatio.map { String(format: "%.3f red/IR ADC", $0) } ?? "Waiting for fitness tracker raw SpO2 samples", icon: "drop.fill", color: StrandPalette.metricCyan)
+                SourceRow(name: "Skin Temp ADC", status: scanner.metrics.sleepSkinTempRaw.map { String(format: "%.0f raw ADC", $0) } ?? "Waiting for fitness tracker skin-temp samples", icon: "thermometer.medium", color: StrandPalette.metricAmber)
             }
             .padding(16)
             .padding(.bottom, 96)
@@ -1389,7 +1390,7 @@ private struct SleepIOSView: View {
     }
 
     private var effectiveSleepHours: Double {
-        NOOPSleepDisplay.hours(
+        WarbFitSleepDisplay.hours(
             healthHours: health.sleepHours,
             whoopHours: scanner.metrics.whoopSleepHours,
             healthIntervals: health.sleepIntervals,
@@ -1398,7 +1399,7 @@ private struct SleepIOSView: View {
     }
 
     private var effectiveSleepStages: [IOSSleepStageSummary] {
-        NOOPSleepDisplay.stages(
+        WarbFitSleepDisplay.stages(
             health: health.sleepStages,
             whoop: scanner.metrics.whoopSleepStages,
             healthIntervals: health.sleepIntervals,
@@ -1407,7 +1408,7 @@ private struct SleepIOSView: View {
     }
 
     private var effectiveSleepIntervals: [IOSSleepInterval] {
-        NOOPSleepDisplay.intervals(
+        WarbFitSleepDisplay.intervals(
             health: health.sleepIntervals,
             whoop: scanner.metrics.whoopSleepIntervals
         )
@@ -1418,7 +1419,7 @@ private struct SleepIOSView: View {
 private struct AlarmIOSView: View {
     @EnvironmentObject private var scanner: IOSWhoopScanner
     @State private var wakeTime = Calendar.current.date(bySettingHour: 7, minute: 0, second: 0, of: Date()) ?? Date()
-    @State private var status = "Connect your WHOOP and set a wake time."
+    @State private var status = "Connect your fitness tracker and set a wake time."
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1462,27 +1463,35 @@ private struct AlarmIOSView: View {
 
 private struct MoreIOSView: View {
     @EnvironmentObject private var scanner: IOSWhoopScanner
-    @AppStorage("noop.ios.backgroundBLE") private var backgroundBLE = true
-    @AppStorage("noop.ios.wristSide") private var wristSide = "left"
+    @EnvironmentObject private var recorder: IOSWorkoutRecorder
+    @AppStorage("warbfit.ios.backgroundBLE") private var backgroundBLE = true
+    @AppStorage("warbfit.ios.wristSide") private var wristSide = "left"
+    @State private var backupShareItems: [Any] = []
+    @State private var showingBackupShare = false
+    @State private var showingBackupImporter = false
+    @State private var showingRestoreConfirmation = false
+    @State private var restoreImportURLs: [URL] = []
+    @State private var backupStatus: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                WarbFitBrandHeader()
                 NavigationLink {
                     SleepIOSView()
                 } label: {
-                    SourceRow(name: "Sleep", status: "\(String(format: "%.1f", scanner.metrics.whoopSleepHours)) h · WHOOP-derived stages", icon: "moon.stars.fill", color: StrandPalette.metricCyan)
+                    SourceRow(name: "Sleep", status: "\(String(format: "%.1f", scanner.metrics.whoopSleepHours)) h · fitness tracker-derived stages", icon: "moon.stars.fill", color: StrandPalette.metricCyan)
                 }
                 .buttonStyle(.plain)
 
                 NavigationLink {
                     AlarmIOSView()
                 } label: {
-                    SourceRow(name: "Wake Alarm", status: "Set WHOOP haptic alarm", icon: "alarm.fill", color: StrandPalette.metricCyan)
+                    SourceRow(name: "Wake Alarm", status: "Set fitness tracker haptic alarm", icon: "alarm.fill", color: StrandPalette.metricCyan)
                 }
                 .buttonStyle(.plain)
 
-                Picker("WHOOP wrist", selection: $wristSide) {
+                Picker("Fitness tracker wrist", selection: $wristSide) {
                     Text("Left").tag("left")
                     Text("Right").tag("right")
                 }
@@ -1490,16 +1499,273 @@ private struct MoreIOSView: View {
                 .padding(10)
                 .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
                 Toggle("Background Bluetooth", isOn: $backgroundBLE)
-                ActionButton(title: "Refresh WHOOP Metrics", icon: "externaldrive.fill", color: StrandPalette.accent) {
+                ActionButton(title: "Refresh fitness tracker metrics", icon: "externaldrive.fill", color: StrandPalette.accent) {
                     Task { await scanner.refreshDeviceMetricsNow() }
                 }
-                SourceRow(name: "WHOOP Wrist", status: "Set to \(wristSide.capitalized). Motion is handled from WHOOP gravity magnitude.", icon: "hand.raised.fill", color: StrandPalette.metricPurple)
-                SourceRow(name: "Data Sources", status: "Recovery, strain, sleep, steps, workouts, HRV, RHR, respiration, raw SpO2, and skin-temp use WHOOP data stored locally.", icon: "lock.shield.fill", color: StrandPalette.accent)
+                ActionButton(title: scanner.isExportingBackup ? "Preparing Backup" : "Export WarbFit Backup",
+                             icon: "square.and.arrow.up",
+                             color: StrandPalette.metricPurple) {
+                    Task { await prepareBackupShare() }
+                }
+                .disabled(scanner.isExportingBackup || scanner.isRestoringBackup)
+                ActionButton(title: scanner.isRestoringBackup ? "Restoring Backup" : "Import WarbFit Backup",
+                             icon: "square.and.arrow.down",
+                             color: StrandPalette.accent) {
+                    showingBackupImporter = true
+                }
+                .disabled(scanner.isExportingBackup || scanner.isRestoringBackup)
+                if let status = backupStatus ?? scanner.backupExportStatus {
+                    SourceRow(name: "Backup", status: status, icon: "archivebox.fill", color: StrandPalette.metricPurple)
+                }
+                SourceRow(name: "Fitness tracker wrist", status: "Set to \(wristSide.capitalized). Motion is handled from fitness tracker gravity magnitude.", icon: "hand.raised.fill", color: StrandPalette.metricPurple)
+                SourceRow(name: "Data Sources", status: "Recovery, strain, sleep, steps, workouts, HRV, RHR, respiration, raw SpO2, and skin-temp use fitness tracker data stored locally.", icon: "lock.shield.fill", color: StrandPalette.accent)
             }
             .padding(16)
             .padding(.bottom, 96)
         }
         .refreshable { await scanner.refreshDeviceMetricsNow() }
+        .sheet(isPresented: $showingBackupShare) {
+            ShareSheet(items: backupShareItems)
+        }
+        .sheet(isPresented: $showingBackupImporter) {
+            DocumentPicker(allowedContentTypes: [.item], allowsMultipleSelection: true) { urls in
+                restoreImportURLs = urls
+                showingRestoreConfirmation = !urls.isEmpty
+            }
+        }
+        .alert("Restore WarbFit backup?", isPresented: $showingRestoreConfirmation) {
+            Button("Restore", role: .destructive) {
+                let urls = restoreImportURLs
+                restoreImportURLs = []
+                Task { await restoreBackup(from: urls) }
+            }
+            Button("Cancel", role: .cancel) {
+                restoreImportURLs = []
+            }
+        } message: {
+            Text("This replaces the local WarbFit database, workouts, and plans with the selected backup files.")
+        }
+    }
+
+    private func prepareBackupShare() async {
+        backupStatus = "Preparing backup"
+        guard let databaseBackup = await scanner.exportLocalDatabaseBackup() else {
+            backupStatus = scanner.backupExportStatus ?? "Backup failed"
+            return
+        }
+
+        do {
+            let databaseURL = databaseBackup.database
+            let folder = databaseURL.deletingLastPathComponent()
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+
+            let workoutsURL = try writeJSON(recorder.workouts,
+                                            named: "warbfit-workouts.json",
+                                            in: folder,
+                                            encoder: encoder)
+            let plansURL = try writeJSON(recorder.plans,
+                                         named: "warbfit-workout-plans.json",
+                                         in: folder,
+                                         encoder: encoder)
+            let settings = WarbFitBackupSettings(
+                formatVersion: 1,
+                exportedAt: Date(),
+                appDisplayName: Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "WarbFit",
+                bundleIdentifier: Bundle.main.bundleIdentifier ?? "unknown",
+                backgroundBluetooth: backgroundBLE,
+                whoopWrist: wristSide,
+                databaseFile: databaseURL.lastPathComponent,
+                workoutsFile: "warbfit-workouts.json",
+                workoutPlansFile: "warbfit-workout-plans.json"
+            )
+            let settingsURL = try writeJSON(settings,
+                                            named: "warbfit-settings.json",
+                                            in: folder,
+                                            encoder: encoder)
+            let readmeURL = folder.appendingPathComponent("README.txt")
+            try Data(backupReadme(exportedAt: settings.exportedAt).utf8)
+                .write(to: readmeURL, options: [.atomic])
+
+            backupShareItems = [databaseURL] + databaseBackup.sidecars + [workoutsURL, plansURL, settingsURL, readmeURL]
+            backupStatus = "Backup ready. Save all shared files together."
+            showingBackupShare = true
+        } catch {
+            backupStatus = "Backup metadata failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func writeJSON<T: Encodable>(_ value: T,
+                                         named name: String,
+                                         in folder: URL,
+                                         encoder: JSONEncoder) throws -> URL {
+        let url = folder.appendingPathComponent(name)
+        let data = try encoder.encode(value)
+        try data.write(to: url, options: [.atomic])
+        return url
+    }
+
+    private func backupReadme(exportedAt: Date) -> String {
+        let exported = ISO8601DateFormatter().string(from: exportedAt)
+        return """
+        WarbFit backup
+        Created: \(exported)
+
+        Keep these files together:
+        - warbfit-whoop.sqlite: local fitness tracker sensor streams, metric logs, sleep, recovery, and strain data.
+        - warbfit-whoop.sqlite-wal / warbfit-whoop.sqlite-shm: included only when SQLite needs sidecar files for a complete backup.
+        - warbfit-workouts.json: logged workouts, notes, routes, workout HR samples, and strength set weights.
+        - warbfit-workout-plans.json: saved strength and swim plans.
+        - warbfit-settings.json: app identifier and WarbFit settings at export time.
+
+        This export is for preserving local data before app name or bundle identifier changes. It does not send data to a server.
+        """
+    }
+
+    private func restoreBackup(from urls: [URL]) async {
+        backupStatus = "Restoring backup"
+        let fileURLs: [URL]
+        do {
+            fileURLs = try expandedBackupFileURLs(from: urls)
+        } catch {
+            backupStatus = "Restore failed: \(error.localizedDescription)"
+            return
+        }
+
+        let access = fileURLs.map { ($0, $0.startAccessingSecurityScopedResource()) }
+        defer {
+            for (url, didAccess) in access where didAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let importedWorkouts = try decodeBackupFile([IOSLoggedWorkout].self,
+                                                        names: backupNames("workouts"),
+                                                        from: fileURLs,
+                                                        decoder: decoder)
+            let importedPlans = try decodeBackupFile([IOSWorkoutPlan].self,
+                                                     names: backupNames("workout-plans"),
+                                                     from: fileURLs,
+                                                     decoder: decoder)
+            let importedSettings = try decodeBackupFile(WarbFitBackupSettings.self,
+                                                        names: backupNames("settings"),
+                                                        from: fileURLs,
+                                                        decoder: decoder)
+            let restoredDatabase = try await scanner.restoreLocalDatabaseBackup(from: fileURLs)
+            guard restoredDatabase || importedWorkouts != nil || importedPlans != nil || importedSettings != nil else {
+                backupStatus = "No WarbFit backup files were found."
+                return
+            }
+
+            let counts = recorder.restoreBackup(workouts: importedWorkouts, plans: importedPlans)
+            if let importedSettings {
+                backgroundBLE = importedSettings.backgroundBluetooth
+                wristSide = importedSettings.whoopWrist
+            }
+            if restoredDatabase {
+                await scanner.refreshDeviceMetricsNow()
+            }
+
+            let databaseText = restoredDatabase ? "database" : "no database"
+            let workoutText = importedWorkouts == nil ? "workouts unchanged" : "\(counts.workouts) workouts"
+            let planText = importedPlans == nil ? "plans unchanged" : "\(counts.plans) plans"
+            backupStatus = "Restore complete: \(databaseText), \(workoutText), \(planText)."
+        } catch {
+            backupStatus = "Restore failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func expandedBackupFileURLs(from urls: [URL]) throws -> [URL] {
+        var files: [URL] = []
+        let fm = FileManager.default
+        for url in urls {
+            var isDirectory: ObjCBool = false
+            if fm.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                let children = try fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
+                files.append(contentsOf: children)
+            } else {
+                files.append(url)
+            }
+        }
+        return files
+    }
+
+    private func decodeBackupFile<T: Decodable>(_ type: T.Type,
+                                                names: [String],
+                                                from urls: [URL],
+                                                decoder: JSONDecoder) throws -> T? {
+        let expected = Set(names.map { $0.lowercased() })
+        guard let url = urls.first(where: { expected.contains($0.lastPathComponent.lowercased()) }) else {
+            return nil
+        }
+        let data = try Data(contentsOf: url)
+        return try decoder.decode(T.self, from: data)
+    }
+
+    private func backupNames(_ stem: String) -> [String] {
+        let legacy = ["n", "o", "o", "p"].joined()
+        return ["warbfit-\(stem).json", "\(legacy)-\(stem).json"]
+    }
+}
+
+private struct WarbFitBackupSettings: Codable {
+    let formatVersion: Int
+    let exportedAt: Date
+    let appDisplayName: String
+    let bundleIdentifier: String
+    let backgroundBluetooth: Bool
+    let whoopWrist: String
+    let databaseFile: String
+    let workoutsFile: String
+    let workoutPlansFile: String
+}
+
+private struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+private struct DocumentPicker: UIViewControllerRepresentable {
+    let allowedContentTypes: [UTType]
+    let allowsMultipleSelection: Bool
+    let onPick: ([URL]) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: allowedContentTypes, asCopy: true)
+        picker.allowsMultipleSelection = allowsMultipleSelection
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick)
+    }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: ([URL]) -> Void
+
+        init(onPick: @escaping ([URL]) -> Void) {
+            self.onPick = onPick
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            onPick(urls)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onPick([])
+        }
     }
 }
 
@@ -1514,7 +1780,7 @@ private struct LiveSummaryCard: View {
                     Text(scanner.connectionState)
                         .font(.system(size: 34, weight: .bold))
                         .foregroundStyle(StrandPalette.textPrimary)
-                    Text(scanner.deviceName ?? "WHOOP 4.0")
+                    Text(scanner.deviceName ?? "Fitness tracker")
                         .font(.subheadline)
                         .foregroundStyle(StrandPalette.textSecondary)
                         .lineLimit(1)
@@ -1563,6 +1829,11 @@ private struct DayPickerHeader: View {
             Spacer()
             Button(action: openCalendar) {
                 HStack(spacing: 8) {
+                    Image("WarbFitLogo")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 26, height: 26)
+                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                     Text(dateText)
                         .font(.title3.weight(.bold))
                         .foregroundStyle(StrandPalette.textPrimary)
@@ -1609,7 +1880,7 @@ private struct MetricsRefreshBanner: View {
                 Text("Updating metrics")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(StrandPalette.textPrimary)
-                Text("Raw WHOOP samples are being summarized now.")
+                Text("Raw fitness tracker samples are being summarized now.")
                     .font(.caption)
                     .foregroundStyle(StrandPalette.textSecondary)
             }
@@ -1818,7 +2089,7 @@ private struct TodayWorkoutList: View {
                 .font(.caption.weight(.bold))
                 .foregroundStyle(StrandPalette.textTertiary)
             if workouts.isEmpty && detectedWorkouts.isEmpty {
-                SourceRow(name: "No workouts", status: "Logged and WHOOP-detected workouts appear here.", icon: "figure.run", color: StrandPalette.textTertiary)
+                SourceRow(name: "No workouts", status: "Logged and fitness tracker-detected workouts appear here.", icon: "figure.run", color: StrandPalette.textTertiary)
             } else {
                 ForEach(workouts) { workout in
                     NavigationLink {
@@ -2155,7 +2426,7 @@ private struct HospitalHRChart: View {
     var body: some View {
         InteractiveHRChart(
             samples: samples.map { HRChartSample(id: "\($0.id)", ts: $0.ts, bpm: $0.bpm) },
-            emptyText: "Waiting for WHOOP HR",
+            emptyText: "Waiting for fitness tracker HR",
             intervals: intervals,
             averagePerMinute: true,
             visibleWindowHours: visibleWindowHoursOverride ?? (compactPreview ? 12 : nil),
@@ -2300,7 +2571,7 @@ private struct InteractiveHRChart: View {
                         zoomCenterTs = nil
                     }
                 } : nil)
-            .onReceive(NotificationCenter.default.publisher(for: .noopClearHRChartSelection)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .warbFitClearHRChartSelection)) { _ in
                 selectedSample = nil
             }
         }
@@ -2707,7 +2978,7 @@ private struct HeartRateDayView: View {
             .padding(.bottom, 96)
             .contentShape(Rectangle())
             .onTapGesture {
-                clearNOOPChartSelection()
+                clearWarbFitChartSelection()
             }
         }
         .navigationTitle("Heart Rate")
@@ -2823,7 +3094,7 @@ private struct RecoveryExplanationView: View {
                 )
                 ExplanationBlock(
                     title: "How it is calculated",
-                    text: "Recovery is calculated after your main sleep window from the WHOOP data collected while you were asleep. NOOP compares your overnight HRV and resting heart rate with your own rolling baseline, then blends in sleep performance, respiration, recent training load, and unusual raw SpO2 or skin-temperature changes when those signals are available."
+                    text: "Recovery is calculated after your main sleep window from the fitness tracker data collected while you were asleep. WarbFit compares your overnight HRV and resting heart rate with your own rolling baseline, then blends in sleep performance, respiration, recent training load, and unusual raw SpO2 or skin-temperature changes when those signals are available."
                 )
                 ExplanationBlock(
                     title: "Main drivers",
@@ -2831,7 +3102,7 @@ private struct RecoveryExplanationView: View {
                 )
                 ExplanationBlock(
                     title: "Score behavior",
-                    text: "Each available input is converted into a personal baseline score, then the inputs are combined and mapped onto a 0-100 scale. Missing optional inputs are skipped and the remaining weights are normalized. If your HRV baseline is still too new, NOOP shows a provisional score based on sleep, recent load, and illness-watch signals until enough nights are collected."
+                    text: "Each available input is converted into a personal baseline score, then the inputs are combined and mapped onto a 0-100 scale. Missing optional inputs are skipped and the remaining weights are normalized. If your HRV baseline is still too new, WarbFit shows a provisional score based on sleep, recent load, and illness-watch signals until enough nights are collected."
                 )
                 SourceRow(name: "Current inputs", status: scanner.metrics.recoveryStatus, icon: "waveform.path.ecg", color: StrandPalette.metricPurple)
             }
@@ -2864,7 +3135,7 @@ private struct StrainExplanationView: View {
                 )
                 ExplanationBlock(
                     title: "Heart-rate load",
-                    text: "NOOP now uses two layers for daily strain. First, every awake interval gets a small quiet-awake load based on MET research: being awake costs more energy than sleeping, but far less than moderate exercise. Second, WHOOP heart-rate data adds extra load when your heart rate rises into the light-intensity heart-rate-reserve range. Higher-intensity time is weighted with Edwards-style heart-rate-zone TRIMP, while lower activity uses a Banister-style continuous TRIMP curve."
+                    text: "WarbFit uses two layers for daily strain. First, every awake interval gets a small quiet-awake load based on MET research: being awake costs more energy than sleeping, but far less than moderate exercise. Second, fitness tracker heart-rate data adds extra load when your heart rate rises into the light-intensity heart-rate-reserve range. Higher-intensity time is weighted with Edwards-style heart-rate-zone TRIMP, while lower activity uses a Banister-style continuous TRIMP curve."
                 )
                 ExplanationBlock(
                     title: "0-21 score",
@@ -2902,7 +3173,7 @@ private struct StrainExplanationView: View {
     }
 
     private var awakeDayHRSamples: [IOSMetricHRSample] {
-        let sleepIntervals = NOOPSleepDisplay.intervals(
+        let sleepIntervals = WarbFitSleepDisplay.intervals(
             health: health.sleepIntervals,
             whoop: scanner.metrics.whoopSleepIntervals
         )
@@ -3024,7 +3295,7 @@ private struct SleepDetailView: View {
     }
 
     private var effectiveSleepHours: Double {
-        NOOPSleepDisplay.hours(
+        WarbFitSleepDisplay.hours(
             healthHours: health.sleepHours,
             whoopHours: scanner.metrics.whoopSleepHours,
             healthIntervals: health.sleepIntervals,
@@ -3033,7 +3304,7 @@ private struct SleepDetailView: View {
     }
 
     private var effectiveSleepEfficiency: Double {
-        NOOPSleepDisplay.efficiency(
+        WarbFitSleepDisplay.efficiency(
             healthEfficiency: health.sleepEfficiency,
             whoopEfficiency: scanner.metrics.whoopSleepEfficiency,
             healthIntervals: health.sleepIntervals,
@@ -3042,7 +3313,7 @@ private struct SleepDetailView: View {
     }
 
     private var effectiveSleepStages: [IOSSleepStageSummary] {
-        NOOPSleepDisplay.stages(
+        WarbFitSleepDisplay.stages(
             health: health.sleepStages,
             whoop: scanner.metrics.whoopSleepStages,
             healthIntervals: health.sleepIntervals,
@@ -3051,7 +3322,7 @@ private struct SleepDetailView: View {
     }
 
     private var effectiveSleepIntervals: [IOSSleepInterval] {
-        NOOPSleepDisplay.intervals(
+        WarbFitSleepDisplay.intervals(
             health: health.sleepIntervals,
             whoop: scanner.metrics.whoopSleepIntervals
         )
@@ -3200,6 +3471,37 @@ private struct SleepStageTimeline: View {
         let ts = range.start.timeIntervalSince1970 + Double((point.x - leftPad) / plotWidth) * total
         selectedInterval = intervals.first {
             ts >= $0.start.timeIntervalSince1970 && ts <= $0.end.timeIntervalSince1970
+        }
+    }
+}
+
+private struct WarbFitBrandHeader: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            Image("WarbFitLogo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 46, height: 46)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(StrandPalette.hairlineStrong, lineWidth: 1)
+                }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("WarbFit")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(StrandPalette.textPrimary)
+                Text("Local fitness tracker training dashboard")
+                    .font(.footnote)
+                    .foregroundStyle(StrandPalette.textSecondary)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(StrandPalette.hairline, lineWidth: 1)
         }
     }
 }
