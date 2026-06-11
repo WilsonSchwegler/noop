@@ -29,6 +29,8 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private static let metricsRefreshDebounceSeconds: TimeInterval = 8
     private static let metricsRefreshIntervalSeconds: TimeInterval = 30 * 60
     private static let metricsRefreshTimeoutSeconds: TimeInterval = 60
+    private static let historyCatchUpCooldownSeconds: TimeInterval = 120
+    private static let liveDataGapHistoryThresholdSeconds = 90
     private static let metricsLogVersion = IOSWhoopDeviceMetrics.dailyLogVersion
     private static let maxLoggedSleepIntervals = 96
 
@@ -54,6 +56,8 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     private var lastScheduledMetricsRefreshAt: Date?
     private var liveChartMinute: Int?
     private var liveChartMinuteBPMs: [Int] = []
+    private var lastLiveHeartRateTs: Int?
+    private var pendingMetricsRefreshAfterBackfill = false
     private var appIsActive = true
     private var midnightFinalization: DispatchWorkItem?
     private var lastForegroundHistoryCatchUpAt: Date?
@@ -173,6 +177,11 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     }
 
     func refreshDeviceMetrics(date: Date = Date()) {
+        guard !backfilling, !backfillDraining else {
+            pendingMetricsRefreshAfterBackfill = true
+            metrics.status = "Waiting for WHOOP history backfill before updating metrics"
+            return
+        }
         cancelMetricsRefresh()
         guard let store else {
             prepareLocalStore()
@@ -189,6 +198,11 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
     }
 
     func refreshDeviceMetricsNow(date: Date = Date()) async {
+        guard !backfilling, !backfillDraining else {
+            pendingMetricsRefreshAfterBackfill = true
+            metrics.status = "Waiting for WHOOP history backfill before updating metrics"
+            return
+        }
         cancelMetricsRefresh()
         guard let store else {
             prepareLocalStore()
@@ -449,9 +463,12 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         }
     }
 
-    private func cancelMetricsRefresh(clearLoading: Bool = true) {
+    private func cancelMetricsRefresh(clearLoading: Bool = true, invalidateGeneration: Bool = true) {
         metricsRefreshTask?.cancel()
         metricsRefreshTask = nil
+        if invalidateGeneration {
+            metricsRefreshGeneration += 1
+        }
         if clearLoading {
             isRefreshingMetrics = false
         }
@@ -743,18 +760,28 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         }
     }
 
-    private func requestHistorySoon(reason: String, delay: TimeInterval = 1.5) {
+    private func requestHistorySoon(reason: String, delay: TimeInterval = 1.5, force: Bool = false) {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.catchUpHistoryIfNeeded(reason: reason)
+            self?.catchUpHistoryIfNeeded(reason: reason, force: force)
         }
     }
 
     private func beginBackfill() {
         guard let peripheral, let characteristic = commandCharacteristic else { return }
+        guard !backfilling else {
+            pendingMetricsRefreshAfterBackfill = true
+            append("Historical sync already in progress")
+            return
+        }
         guard let backfiller else {
             append("Sync deferred: store is not ready")
             return
         }
+        metricsRefreshDebounce?.cancel()
+        metricsRefreshDebounce = nil
+        pendingMetricsRefreshAfterBackfill = true
+        cancelMetricsRefresh()
+        metrics.status = "Backfilling WHOOP history"
         backfiller.begin()
         backfilling = true
         sendCommand(22, payload: [0x00], to: characteristic, on: peripheral, writeType: .withResponse)
@@ -762,11 +789,12 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         append("Historical sync requested from WHOOP")
     }
 
-    private func catchUpHistoryIfNeeded(reason: String) {
+    private func catchUpHistoryIfNeeded(reason: String, force: Bool = false) {
         guard isBondReady else { return }
         let now = Date()
-        if let lastForegroundHistoryCatchUpAt,
-           now.timeIntervalSince(lastForegroundHistoryCatchUpAt) < 120 {
+        if !force,
+           let lastForegroundHistoryCatchUpAt,
+           now.timeIntervalSince(lastForegroundHistoryCatchUpAt) < Self.historyCatchUpCooldownSeconds {
             return
         }
         lastForegroundHistoryCatchUpAt = now
@@ -785,6 +813,10 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         }
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            guard !self.backfilling, !self.backfillDraining else {
+                self.pendingMetricsRefreshAfterBackfill = true
+                return
+            }
             let now = Date()
             if let last = self.lastScheduledMetricsRefreshAt,
                now.timeIntervalSince(last) < Self.metricsRefreshIntervalSeconds {
@@ -863,7 +895,10 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
                 }
             }
             backfillDraining = false
-            refreshDeviceMetrics()
+            if !backfilling, pendingMetricsRefreshAfterBackfill {
+                pendingMetricsRefreshAfterBackfill = false
+                refreshDeviceMetrics()
+            }
         }
     }
 
@@ -883,6 +918,9 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         backfillTimeout = nil
         backfilling = false
         append("Historical sync \(reason)")
+        let shouldRefresh = pendingMetricsRefreshAfterBackfill
+        pendingMetricsRefreshAfterBackfill = false
+        guard shouldRefresh || reason == "complete" || reason == "timeout" else { return }
         refreshDeviceMetrics()
     }
 
@@ -914,9 +952,19 @@ final class IOSWhoopScanner: NSObject, ObservableObject {
         }
         if let heartRate {
             let ts = Int(Date().timeIntervalSince1970)
+            detectLiveDataGap(at: ts)
             collector?.ingestStandardHR(hr: heartRate, rr: intervals, at: ts)
             mergeLiveHeartRate(bpm: heartRate, ts: ts)
         }
+    }
+
+    private func detectLiveDataGap(at ts: Int) {
+        defer { lastLiveHeartRateTs = ts }
+        guard let previous = lastLiveHeartRateTs else { return }
+        let gap = ts - previous
+        guard gap >= Self.liveDataGapHistoryThresholdSeconds else { return }
+        append("Detected \(gap)s WHOOP live HR gap")
+        catchUpHistoryIfNeeded(reason: "live HR gap", force: true)
     }
 
     private func mergeLiveHeartRate(bpm: Int, ts: Int) {
@@ -1152,7 +1200,7 @@ extension IOSWhoopScanner: @preconcurrency CBCentralManagerDelegate {
         append("Connected")
         bootstrapStoreIfNeeded()
         discoverServices(on: peripheral)
-        requestHistorySoon(reason: "reconnect", delay: 3.0)
+        requestHistorySoon(reason: "reconnect", delay: 3.0, force: true)
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
