@@ -31,7 +31,7 @@ import androidx.compose.ui.unit.dp
 //
 // A proper in-app changelog, shown automatically after an update and reachable any time
 // from Settings. It also restates, up top, what WarbFit is and what to expect, so people who
-// never open GitHub still understand the experimental footing and the WHOOP 5/MG status.
+// never open GitHub still understand the experimental footing and the TRACKER 5/MG status.
 //
 // macOS parity notes:
 //  - macOS rendered a fixed 560×640 panel with a header / scroll / footer split and a

@@ -12,15 +12,15 @@ import net.wilsonschwegler.warbfit.data.StreamBatch
 import net.wilsonschwegler.warbfit.data.StreamPersistence
 
 /*
- * Historical (offload) decode for the WHOOP 4.0 — the type-47 HISTORICAL_DATA path.
+ * Historical (offload) decode for the TRACKER 4.0 — the type-47 HISTORICAL_DATA path.
  *
  * Faithful port of three macOS Swift pieces:
- *   - the `postHooks["historical_data"]` decoder (Packages/WhoopProtocol/.../PostHooks.swift),
+ *   - the `postHooks["historical_data"]` decoder (Packages/TrackerProtocol/.../PostHooks.swift),
  *     which decodes a type-47 record's biometric block using the per-version field table baked
- *     into whoop_protocol.json (V24/V12 = full DSP block; V5/V7/V9 = generic HR/RR only),
- *   - `classifyHistoricalMeta` (Packages/WhoopProtocol/.../HistoricalMeta.swift), the METADATA
+ *     into tracker_protocol.json (V24/V12 = full DSP block; V5/V7/V9 = generic HR/RR only),
+ *   - `classifyHistoricalMeta` (Packages/TrackerProtocol/.../HistoricalMeta.swift), the METADATA
  *     classifier the offload state machine uses, and
- *   - `extractHistoricalStreams` (Packages/WhoopProtocol/.../HistoricalStreams.swift), which turns
+ *   - `extractHistoricalStreams` (Packages/TrackerProtocol/.../HistoricalStreams.swift), which turns
  *     a batch of parsed offload frames into datastore rows.
  *
  * WHY this lives here and not in [Framing.parseFrame]: the live [Framing] decoder deliberately
@@ -31,7 +31,7 @@ import net.wilsonschwegler.warbfit.data.StreamPersistence
  * The frame envelope is identical to Framing.kt's: [0]=0xAA, [1..2]=len u16 LE, [3]=crc8(len),
  * [4]=packet type (47 here), [5]=record VERSION (NOT a sequence byte for type-47 — the schema
  * note says "Version = seq byte (frame[5])"), [6..]=record. Field offsets in the version table
- * are FRAME-ABSOLUTE (= openwhoop data offset + 7). All multi-byte values are little-endian.
+ * are FRAME-ABSOLUTE (= opentracker data offset + 7). All multi-byte values are little-endian.
  */
 
 // MARK: - little-endian readers (null when out of range; mirror PostHooks.swift u8/u16/u32/f32)
@@ -62,7 +62,7 @@ private fun ByteArray.histF32(off: Int): Double? {
 
 /**
  * One decoded type-47 field-layout VERSION. Frame-absolute offsets, lifted verbatim from the
- * `HISTORICAL_DATA.versions` table in whoop_protocol.json. `rrFirstOff` is where the (up to 4)
+ * `HISTORICAL_DATA.versions` table in tracker_protocol.json. `rrFirstOff` is where the (up to 4)
  * u16 R-R intervals begin. A null DSP-block offset means that field is absent for the version.
  */
 private data class HistVersion(
@@ -81,8 +81,8 @@ private data class HistVersion(
 )
 
 /**
- * V24 layout (this WHOOP 4.0; verified on 762 device records per the schema note). V12 shares the
- * exact same DSP layout ("ref":"24"). Offsets are FRAME-ABSOLUTE, copied from whoop_protocol.json.
+ * V24 layout (this TRACKER 4.0; verified on 762 device records per the schema note). V12 shares the
+ * exact same DSP layout ("ref":"24"). Offsets are FRAME-ABSOLUTE, copied from tracker_protocol.json.
  */
 private val HIST_V24 = HistVersion(
     unixOff = 11,
@@ -123,10 +123,10 @@ private fun histVersionLayout(version: Int): HistVersion? = when (version) {
  * `rr_intervals` (List<Int>), `spo2_red`, `spo2_ir`, `skin_temp_raw`, `resp_rate_raw`, `gravity_x`,
  * `gravity_y`, `gravity_z`. These match the keys [extractHistoricalStreams] reads.
  */
-fun decodeHistorical(frame: ByteArray, family: DeviceFamily = DeviceFamily.WHOOP4): Map<String, Any?>? {
-    // WHOOP5 type-47 offsets are a later milestone (the live Framing.parseFrame defers WHOOP5
-    // biometric decode too); only WHOOP4 historical decode is hardware-verified.
-    if (family != DeviceFamily.WHOOP4) return null
+fun decodeHistorical(frame: ByteArray, family: DeviceFamily = DeviceFamily.TRACKER4): Map<String, Any?>? {
+    // TRACKER5 type-47 offsets are a later milestone (the live Framing.parseFrame defers TRACKER5
+    // biometric decode too); only TRACKER4 historical decode is hardware-verified.
+    if (family != DeviceFamily.TRACKER4) return null
     if (frame.size < 8 || frame[0] != 0xAA.toByte()) return null
 
     // Integrity gate: validate the envelope + CRC32 via the shared Framing parser. We reuse its
@@ -185,7 +185,7 @@ sealed class HistoricalMeta {
  * Classify a parsed METADATA frame into the four cases the offload state machine needs.
  * Direct port of Swift `classifyHistoricalMeta`.
  *
- * Field mapping (whoop_protocol.json + Framing.decodeMetadata): `meta_type` is the
+ * Field mapping (tracker_protocol.json + Framing.decodeMetadata): `meta_type` is the
  * "NAME(rawValue)" enum label (e.g. "HISTORY_END(2)"); for HISTORY_END the metadata decoder
  * additionally stores `unix` and `trim_cursor`. We match by prefix so a raw-value change can't
  * break the classifier.
@@ -233,7 +233,7 @@ fun extractHistoricalStreams(
     rawFrames: List<ByteArray>,
     deviceClockRef: Int,
     wallClockRef: Int,
-    family: DeviceFamily = DeviceFamily.WHOOP4,
+    family: DeviceFamily = DeviceFamily.TRACKER4,
 ): StreamBatch {
     fun wall(deviceTs: Int?): Int? = if (deviceTs == null) null else wallClockRef + (deviceTs - deviceClockRef)
 

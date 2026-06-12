@@ -1,12 +1,12 @@
 import Foundation
-import WhoopProtocol
-@preconcurrency import WhoopStore
+import TrackerProtocol
+@preconcurrency import TrackerStore
 
 // AnalyticsEngine.swift — orchestrator producing DailyMetric + sleep-session results.
 //
 // Mirrors the role of server/ingest/app/analysis/daily.py + sleep.daily_sleep_summary:
 // given a day's raw streams + a user profile + personal baselines, it runs the
-// individual analyzers and assembles a `DailyMetric` (WhoopStore shape) plus the
+// individual analyzers and assembles a `DailyMetric` (TrackerStore shape) plus the
 // detected `SleepSession`s (and their `CachedSleepSession` cache shapes).
 //
 // This is a PURE function over its inputs — it does NOT touch the database
@@ -28,11 +28,11 @@ public enum AnalyticsEngine {
     /// The full analysis result for one day.
     ///
     /// NOTE: not `Sendable` — it embeds `DailyMetric` / `CachedSleepSession` from
-    /// WhoopStore, which are not `Sendable` (and that package is out of scope to
+    /// TrackerStore, which are not `Sendable` (and that package is out of scope to
     /// modify here). The individual analyzer result types in this package ARE
     /// `Sendable`.
     public struct DayResult {
-        /// DailyMetric in the WhoopStore cache shape (recovery/strain/sleep rolled up).
+        /// DailyMetric in the TrackerStore cache shape (recovery/strain/sleep rolled up).
         public let daily: DailyMetric
         /// Detected sleep sessions (rich, with stage segments).
         public let sleepSessions: [SleepSession]

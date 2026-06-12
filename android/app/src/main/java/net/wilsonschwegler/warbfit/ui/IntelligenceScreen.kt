@@ -31,11 +31,11 @@ import kotlin.math.roundToInt
 
 /**
  * Intelligence — WarbFit's own recovery / strain / sleep scores, presented with the
- * WHOOP-model explanation so the read-out is legible rather than a black box.
+ * TRACKER-model explanation so the read-out is legible rather than a black box.
  *
  * Ports macOS Strand/Screens/IntelligenceView.swift. The macOS build runs an
  * on-device IntelligenceEngine that recomputes these scores from the strap's raw
- * streams (HR, R-R, accelerometer) using the WHOOP model shape. That raw-compute
+ * streams (HR, R-R, accelerometer) using the TRACKER model shape. That raw-compute
  * port is later work on Android; until it lands this screen reads the cached
  * `DailyMetric` values the strap/store already provide and shows the same model
  * explainer + per-day breakdown — matching the macOS sparse-data contract of

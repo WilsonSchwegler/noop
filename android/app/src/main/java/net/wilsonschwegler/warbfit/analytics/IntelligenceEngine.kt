@@ -2,27 +2,27 @@ package net.wilsonschwegler.warbfit.analytics
 
 import net.wilsonschwegler.warbfit.data.DailyMetric
 import net.wilsonschwegler.warbfit.data.SleepSession
-import net.wilsonschwegler.warbfit.data.WhoopRepository
+import net.wilsonschwegler.warbfit.data.TrackerRepository
 
 /*
  * IntelligenceEngine.kt — on-device "intelligence": computes recovery / day-strain /
- * sleep from the raw strap streams using the same model shape WHOOP uses (HRV vs
+ * sleep from the raw strap streams using the same model shape TRACKER uses (HRV vs
  * personal baseline ~60%, resting HR ~20%, sleep ~15%, respiration ~5%; strain 0–21
  * from cardiovascular load).
  *
  * Faithful Kotlin port of Strand/Data/IntelligenceEngine.swift (verified on macOS).
  * Same windows, same thresholds, same persistence model:
  *   - For each recent day with >= MIN_HR_SAMPLES (200) HR samples, read a generous
- *     window of raw streams from the imported source ("my-whoop"), run
+ *     window of raw streams from the imported source ("my-tracker"), run
  *     AnalyticsEngine.analyzeDay against baselines folded from repo.days, and PERSIST
  *     the DailyMetric + sleep sessions under "<deviceId>-warbfit" (the computed source).
- *   - The repository merges these UNDER any imported "my-whoop" rows, so a real WHOOP
+ *   - The repository merges these UNDER any imported "my-tracker" rows, so a real TRACKER
  *     import always wins; this only fills the days the strap collected but no import
  *     covered.
  *
- * This is what makes WarbFit independent of WHOOP's cloud — for any day the strap
+ * This is what makes WarbFit independent of TRACKER's cloud — for any day the strap
  * collected raw data with WarbFit connected, WarbFit scores it itself rather than relying on
- * the values WHOOP computed in the imported CSV.
+ * the values TRACKER computed in the imported CSV.
  *
  * Stateless object (no ObservableObject equivalent here): the Compose layer observes
  * the repository's reactive day flow, so this engine just computes + persists, then the
@@ -53,7 +53,7 @@ object IntelligenceEngine {
      * data, persisting them under the computed "<importedDeviceId>-warbfit" source.
      *
      * Personal baselines (HRV / resting HR) are folded from the imported nightly history
-     * (via [WhoopRepository.days]), so even the first live night can be scored against
+     * (via [TrackerRepository.days]), so even the first live night can be scored against
      * the user's norm.
      *
      * @param repo the local store.
@@ -61,16 +61,16 @@ object IntelligenceEngine {
      *   zones, calories. Defaults to a neutral [UserProfile] when the caller has none.
      * @param maxDays number of trailing days to consider (default 21).
      * @param importedDeviceId the source id the raw strap data is stored under
-     *   ("my-whoop"). Computed scores are written under "<importedDeviceId>-warbfit".
+     *   ("my-tracker"). Computed scores are written under "<importedDeviceId>-warbfit".
      * @param maxHROverride explicit HRmax (bpm); null → Tanaka from profile.age.
      * @param nowSeconds wall-clock now (unix seconds); injectable for tests/determinism.
      * @return the per-day [Computed] summaries (newest first), mirroring the Swift `out`.
      */
     suspend fun analyzeRecent(
-        repo: WhoopRepository,
+        repo: TrackerRepository,
         profile: UserProfile = UserProfile(),
         maxDays: Int = 21,
-        importedDeviceId: String = "my-whoop",
+        importedDeviceId: String = "my-tracker",
         maxHROverride: Double? = null,
         nowSeconds: Long = System.currentTimeMillis() / 1000L,
     ): List<Computed> {
@@ -145,7 +145,7 @@ object IntelligenceEngine {
 
         // Persist the computed scores under the dedicated "-warbfit" source so the WHOLE
         // dashboard (Today / Recovery / Strain / Sleep / Trends) reads them. The
-        // repository merges these UNDER any imported "my-whoop" rows, so a real WHOOP
+        // repository merges these UNDER any imported "my-tracker" rows, so a real TRACKER
         // import always wins; this only fills the days the strap collected but no import
         // covered.
         if (dailies.isNotEmpty()) repo.upsertDailyMetrics(dailies)

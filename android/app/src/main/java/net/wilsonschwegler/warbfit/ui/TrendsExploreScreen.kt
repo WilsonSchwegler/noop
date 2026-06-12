@@ -164,7 +164,7 @@ private fun statOf(values: List<Double>): Stat {
 
 @Composable
 fun TrendsExploreScreen(vm: AppViewModel) {
-    val deviceId = "my-whoop"
+    val deviceId = "my-tracker"
     val recentDays by vm.recentDays.collectAsStateWithLifecycle()
 
     // Extra long-format keys from the metricSeries table (anything beyond the built-ins).

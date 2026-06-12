@@ -41,7 +41,7 @@ import kotlin.math.roundToInt
 // auto-expand rule: if the selected window holds zero points for a metric, the smallest
 // LARGER range that does is used and the card caption notes the widening.
 //
-// Data: full history is loaded once via repo.days("my-whoop"); until it arrives the
+// Data: full history is loaded once via repo.days("my-tracker"); until it arrives the
 // reactive recentDays flow backs the charts, so the screen is never empty when data exists.
 //
 // Difference from macOS: the macOS Trends footer carries a YearHeatStrip calendar
@@ -58,8 +58,8 @@ fun TrendsScreen(vm: AppViewModel) {
     // until it lands so the screen is populated on first frame when any data exists.
     var fullHistory by remember { mutableStateOf<List<DailyMetric>?>(null) }
     LaunchedEffect(Unit) {
-        // Merged: imported WHOOP days win; on-device computed days gap-fill the trends.
-        fullHistory = vm.repo.daysMerged("my-whoop")
+        // Merged: imported TRACKER days win; on-device computed days gap-fill the trends.
+        fullHistory = vm.repo.daysMerged("my-tracker")
     }
     val days = fullHistory ?: reactiveDays
 

@@ -53,10 +53,10 @@ class CrcTest {
     }
 
     @Test
-    fun crc16Modbus_whoop5HelloHeader() {
-        // CRC16-Modbus over the first 6 bytes of the Whoop 5.0 hello must equal the LE value
+    fun crc16Modbus_tracker5HelloHeader() {
+        // CRC16-Modbus over the first 6 bytes of the Tracker 5.0 hello must equal the LE value
         // stored at bytes [6..7] of that hello (0xE6, 0x71 -> 0x71E6).
-        val hello = DeviceFamily.WHOOP5_CLIENT_HELLO
+        val hello = DeviceFamily.TRACKER5_CLIENT_HELLO
         val want = (hello[6].toInt() and 0xFF) or ((hello[7].toInt() and 0xFF) shl 8)
         assertEquals(want, Crc.crc16Modbus(hello.copyOfRange(0, 6)))
         assertEquals(0x71E6, want)

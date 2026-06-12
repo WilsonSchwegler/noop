@@ -1,5 +1,5 @@
 import Foundation
-import WhoopProtocol
+import TrackerProtocol
 
 // HRVAnalyzer.swift — RMSSD + SDNN from RR intervals with cleaning.
 //

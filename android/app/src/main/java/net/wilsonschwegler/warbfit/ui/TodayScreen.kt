@@ -42,7 +42,7 @@ import kotlin.math.roundToInt
  * composition (Strand/Screens/TodayView.swift) with the same locked components.
  *
  * Sparkline series are built off the view model's `recentDays` (oldest → newest,
- * all from the my-whoop source). Steps / Weight / Calories have no on-device daily
+ * all from the my-tracker source). Steps / Weight / Calories have no on-device daily
  * source on Android, so those tiles read "—" with an empty trend until an Apple
  * Health / metricSeries bridge lands — matching the macOS sparse-data contract.
  */

@@ -28,35 +28,70 @@ private extension View {
 }
 
 private enum WarbFitSleepDisplay {
-    static func intervals(health: [IOSSleepInterval], whoop: [IOSSleepInterval]) -> [IOSSleepInterval] {
-        asleepHours(in: whoop) > 0 ? whoop : health
+    static func intervals(health: [IOSSleepInterval], tracker: [IOSSleepInterval], source: IOSDeviceSource) -> [IOSSleepInterval] {
+        switch source {
+        case .tracker:
+            return asleepHours(in: tracker) > 0 ? tracker : health
+        case .appleWatch:
+            return asleepHours(in: health) > 0 ? health : tracker
+        }
     }
 
     static func hours(healthHours: Double,
-                      whoopHours: Double,
+                      trackerHours: Double,
                       healthIntervals: [IOSSleepInterval],
-                      whoopIntervals: [IOSSleepInterval]) -> Double {
-        if whoopHours > 0 { return whoopHours }
-        let intervalHours = asleepHours(in: whoopIntervals)
-        if intervalHours > 0 { return intervalHours }
-        return healthHours
+                      trackerIntervals: [IOSSleepInterval],
+                      source: IOSDeviceSource) -> Double {
+        switch source {
+        case .tracker:
+            if trackerHours > 0 { return trackerHours }
+            let intervalHours = asleepHours(in: trackerIntervals)
+            if intervalHours > 0 { return intervalHours }
+            return healthHours
+        case .appleWatch:
+            if healthHours > 0 { return healthHours }
+            let intervalHours = asleepHours(in: healthIntervals)
+            if intervalHours > 0 { return intervalHours }
+            return trackerHours
+        }
     }
 
     static func efficiency(healthEfficiency: Double,
-                           whoopEfficiency: Double,
+                           trackerEfficiency: Double,
                            healthIntervals: [IOSSleepInterval],
-                           whoopIntervals: [IOSSleepInterval]) -> Double {
-        whoopEfficiency > 0 ? whoopEfficiency : healthEfficiency
+                           trackerIntervals: [IOSSleepInterval],
+                           source: IOSDeviceSource) -> Double {
+        switch source {
+        case .tracker:
+            if trackerEfficiency > 0 { return trackerEfficiency }
+            if let intervalEfficiency = intervalEfficiency(trackerIntervals) { return intervalEfficiency }
+            if healthEfficiency > 0 { return healthEfficiency }
+            return intervalEfficiency(healthIntervals) ?? 0
+        case .appleWatch:
+            if healthEfficiency > 0 { return healthEfficiency }
+            if let intervalEfficiency = intervalEfficiency(healthIntervals) { return intervalEfficiency }
+            if trackerEfficiency > 0 { return trackerEfficiency }
+            return intervalEfficiency(trackerIntervals) ?? 0
+        }
     }
 
     static func stages(health: [IOSSleepStageSummary],
-                       whoop: [IOSSleepStageSummary],
+                       tracker: [IOSSleepStageSummary],
                        healthIntervals: [IOSSleepInterval],
-                       whoopIntervals: [IOSSleepInterval]) -> [IOSSleepStageSummary] {
-        if !whoop.isEmpty { return whoop }
-        if !whoopIntervals.isEmpty { return summarize(whoopIntervals) }
-        if !health.isEmpty { return health }
-        return summarize(healthIntervals)
+                       trackerIntervals: [IOSSleepInterval],
+                       source: IOSDeviceSource) -> [IOSSleepStageSummary] {
+        switch source {
+        case .tracker:
+            if !tracker.isEmpty { return tracker }
+            if !trackerIntervals.isEmpty { return summarize(trackerIntervals) }
+            if !health.isEmpty { return health }
+            return summarize(healthIntervals)
+        case .appleWatch:
+            if !health.isEmpty { return health }
+            if !healthIntervals.isEmpty { return summarize(healthIntervals) }
+            if !tracker.isEmpty { return tracker }
+            return summarize(trackerIntervals)
+        }
     }
 
     private static func asleepHours(in intervals: [IOSSleepInterval]) -> Double {
@@ -66,16 +101,81 @@ private enum WarbFitSleepDisplay {
         }
     }
 
+    private static func intervalEfficiency(_ intervals: [IOSSleepInterval]) -> Double? {
+        let valid = intervals
+            .filter { $0.end > $0.start }
+            .sorted { $0.start < $1.start }
+        guard let start = valid.first?.start,
+              let end = valid.last?.end,
+              end > start,
+              valid.contains(where: { $0.stage == "Awake" }) else { return nil }
+        let asleep = valid.reduce(0.0) { total, interval in
+            guard interval.stage != "Awake" else { return total }
+            return total + interval.end.timeIntervalSince(interval.start)
+        }
+        return max(0.0, min(1.0, asleep / end.timeIntervalSince(start)))
+    }
+
     private static func summarize(_ intervals: [IOSSleepInterval]) -> [IOSSleepStageSummary] {
         var totals: [String: Double] = [:]
         for interval in intervals {
             let hours = interval.end.timeIntervalSince(interval.start) / 3600.0
             totals[interval.stage, default: 0] += hours
         }
-        return ["Core", "Deep", "REM", "Awake"].compactMap { name in
+        return ["Core", "Deep", "REM", "Unstaged", "Awake"].compactMap { name in
             guard let hours = totals[name], hours > 0.01 else { return nil }
             return IOSSleepStageSummary(name: name, hours: hours)
         }
+    }
+}
+
+@MainActor
+private func warbFitDetectedDeviceSource(scanner: IOSTrackerScanner,
+                                         health: IOSHealthStore? = nil,
+                                         watchWorkoutBridge: IOSWatchWorkoutBridge? = nil,
+                                         preferredSource: IOSDeviceSource? = nil) -> IOSDeviceSource {
+    if let preferredSource {
+        return preferredSource
+    }
+    if scanner.isConnected || scanner.heartRate != nil {
+        return .tracker
+    }
+    if watchWorkoutBridge?.liveWorkout != nil || watchWorkoutBridge?.isReachable == true {
+        return .appleWatch
+    }
+    if let health, health.sleepHours > 0 || !health.sleepIntervals.isEmpty {
+        return .appleWatch
+    }
+    return .tracker
+}
+
+private func warbFitMetricSamples(_ samples: [IOSMetricHRSample], for source: IOSDeviceSource) -> [IOSMetricHRSample] {
+    let sourceForDate = IOSDeviceSource.sourceResolver()
+    return samples
+        .filter { sample in
+            sourceForDate(Date(timeIntervalSince1970: TimeInterval(sample.ts))) == source
+        }
+        .enumerated()
+        .map { index, sample in IOSMetricHRSample(id: index, ts: sample.ts, bpm: sample.bpm) }
+}
+
+private func warbFitLoggedWorkout(_ workout: IOSLoggedWorkout, belongsTo source: IOSDeviceSource) -> Bool {
+    guard IOSDeviceSource.source(for: workout.startedAt) == source else { return false }
+    switch source {
+    case .tracker:
+        return workout.source == .phone
+    case .appleWatch:
+        return workout.source == .companion || workout.source == .appleHealth
+    }
+}
+
+private func warbFitActiveWorkout(_ workout: IOSActiveWorkout, belongsTo source: IOSDeviceSource) -> Bool {
+    guard IOSDeviceSource.source(for: workout.startedAt) == source else { return false }
+    switch source {
+    case .tracker:
+        return workout.source == .phone
+    case .appleWatch:
+        return workout.source == .companion
     }
 }
 
@@ -103,10 +203,11 @@ struct FeatureDetailView: View {
 }
 
 struct TodayIOSView: View {
-    @EnvironmentObject private var scanner: IOSWhoopScanner
+    @EnvironmentObject private var scanner: IOSTrackerScanner
     @EnvironmentObject private var health: IOSHealthStore
     @EnvironmentObject private var recorder: IOSWorkoutRecorder
     @EnvironmentObject private var pedometer: IOSPedometerStore
+    @AppStorage(IOSDeviceSource.storageKey) private var selectedDeviceSource = IOSDeviceSource.tracker.rawValue
     @State private var selectedDate = Date()
     @State private var calendarMonth = Date()
     @State private var showingCalendar = false
@@ -115,7 +216,12 @@ struct TodayIOSView: View {
     var body: some View {
         let dailyStrain = effectiveDailyStrain
         let recoveryScore = effectiveRecoveryScore
-        let adjustedLoad = recoveryAdjustedLoad
+        let adjustedLoad = IOSStrainEstimator.recoveryAdjustedLoad(strain: dailyStrain, recovery: recoveryScore)
+        let fullHRSamples = fullHeartRateSamples
+        let previewHRSamples = previewHeartRateSamples(from: fullHRSamples)
+        let intervals = heartRateIntervals
+        let selectedWorkouts = workoutsForSelectedDate
+        let source = detectedDeviceSource
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 DayPickerHeader(selectedDate: $selectedDate) {
@@ -131,7 +237,7 @@ struct TodayIOSView: View {
                         RecoveryExplanationView()
                     } label: {
                         RingScoreCard(
-                            title: "Recovery",
+                            title: "Readiness",
                             value: recoveryScore,
                             valueText: recoveryScore.map { "\(Int($0.rounded()))" } ?? "--",
                             unit: "%",
@@ -144,16 +250,16 @@ struct TodayIOSView: View {
                         StrainExplanationView()
                     } label: {
                         RingScoreCard(
-                            title: "Strain",
+                            title: "Exertion",
                             value: dailyStrain,
                             valueText: dailyStrain.map { String(format: "%.1f", $0) } ?? "--",
                             unit: "/21",
                             progress: dailyStrain.map { $0 / 21.0 } ?? 0,
-                            color: dailyStrain == nil ? StrandPalette.textTertiary : StrandPalette.metricCyan,
+                            color: dailyStrain == nil ? StrandPalette.textTertiary : StrandPalette.metricPurple,
                             secondaryTitle: "Adj load",
                             secondaryValueText: adjustedLoad.map { String(format: "%.1f", $0) },
                             secondaryProgress: adjustedLoad.map { $0 / 21.0 },
-                            secondaryColor: adjustedLoad == nil ? nil : StrandPalette.metricPurple
+                            secondaryColor: adjustedLoad == nil ? nil : StrandPalette.strain100
                         )
                     }
                     .buttonStyle(.plain)
@@ -167,14 +273,12 @@ struct TodayIOSView: View {
                     .buttonStyle(.plain)
                     ScoreCard(title: "Steps", value: "\(displaySteps)", unit: "", color: StrandPalette.strain066)
                 }
-                if let calories = scanner.metrics.calories, calories > 0 {
-                    ScoreCard(title: "Calories", value: "\(Int(calories.rounded()))", unit: "kcal", color: StrandPalette.metricAmber)
-                }
                 NavigationLink {
                     HeartRateDayView(
                         selectedDate: selectedDate,
-                        samples: fullHeartRateSamples,
-                        intervals: heartRateIntervals
+                        samples: fullHRSamples,
+                        intervals: intervals,
+                        deviceSource: source
                     )
                 } label: {
                     VStack(alignment: .leading, spacing: 10) {
@@ -183,21 +287,21 @@ struct TodayIOSView: View {
                                 .font(.caption.weight(.bold))
                                 .foregroundStyle(StrandPalette.textTertiary)
                             Spacer()
-                            Text(heartRateHeaderText)
+                            Text(heartRateHeaderText(previewSamples: previewHRSamples))
                                 .font(.subheadline.weight(.semibold).monospacedDigit())
                                 .foregroundStyle(StrandPalette.metricRose)
                         }
-                        HospitalHRChart(samples: heartRatePreviewSamples, intervals: heartRateIntervals)
+                        HospitalHRChart(samples: previewHRSamples, intervals: intervals)
                             .frame(height: 118)
-                        HRIntervalLegend(intervals: heartRateIntervals)
+                        HRIntervalLegend(intervals: intervals)
                     }
                     .padding(12)
                     .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 12))
                 }
                 .buttonStyle(.plain)
                 TodayWorkoutList(
-                    workouts: workoutsForSelectedDate,
-                    detectedWorkouts: scanner.metrics.workouts
+                    workouts: selectedWorkouts,
+                    detectedWorkouts: source == .tracker ? scanner.metrics.workouts : []
                 )
             }
             .padding(.horizontal, 16)
@@ -209,6 +313,9 @@ struct TodayIOSView: View {
         .warbFitRefreshableWhen(Calendar.current.isDateInToday(selectedDate)) {
             await scanner.refreshDeviceMetricsNow(date: selectedDate)
             await MainActor.run {
+                if preferredDeviceSource == .appleWatch {
+                    health.refresh(for: selectedDate)
+                }
                 pedometer.refresh(date: selectedDate) { date, steps in
                     scanner.recordPhoneSteps(steps, for: date)
                 }
@@ -216,6 +323,9 @@ struct TodayIOSView: View {
         }
         .onAppear {
             loadRecoveryScores(for: selectedDate)
+            if preferredDeviceSource == .appleWatch {
+                health.refresh(for: selectedDate)
+            }
             pedometer.refresh(date: selectedDate) { date, steps in
                 scanner.recordPhoneSteps(steps, for: date)
             }
@@ -228,6 +338,9 @@ struct TodayIOSView: View {
                 }
             } else {
                 scanner.loadLoggedMetricsForDay(date)
+            }
+            if preferredDeviceSource == .appleWatch {
+                health.refresh(for: date)
             }
             loadRecoveryScores(for: date)
         }
@@ -244,28 +357,49 @@ struct TodayIOSView: View {
     }
 
     private var workoutsForSelectedDate: [IOSLoggedWorkout] {
-        recorder.workouts.filter { Calendar.current.isDate($0.startedAt, inSameDayAs: selectedDate) }
+        recorder.workouts.filter {
+            Calendar.current.isDate($0.startedAt, inSameDayAs: selectedDate) &&
+                warbFitLoggedWorkout($0, belongsTo: detectedDeviceSource)
+        }
     }
 
     private var effectiveDailyStrain: Double? {
+        if detectedDeviceSource == .appleWatch {
+            let computed = IOSStrainEstimator.awakeDayStrain(
+                metricSamples: awakeDayHRSamples,
+                maxHR: IOSUserBodyProfile.current.estimatedMaxHR,
+                restingHR: health.exertionRestingHR,
+                physiologySex: IOSUserBodyProfile.current.physiologySex.analyticsValue
+            )
+            let bestWorkout = workoutsForSelectedDate.compactMap(\.effectiveStrain).max()
+            let allDayHealthStrain = sourceAtStartOfSelectedDay == .appleWatch ? health.dailyStrain : nil
+            return [computed, allDayHealthStrain, bestWorkout]
+                .compactMap { $0 }
+                .max()
+        }
         if isDisplayingLoggedSnapshot {
-            return scanner.metrics.strain
+            return detectedDeviceSource == .tracker ? scanner.metrics.strain : nil
         }
         guard Calendar.current.isDateInToday(selectedDate) else {
-            return scanner.metrics.strain
+            return detectedDeviceSource == .tracker ? scanner.metrics.strain : nil
         }
         let computed = IOSStrainEstimator.awakeDayStrain(
             metricSamples: awakeDayHRSamples,
-            restingHR: scanner.metrics.restingHR.map(Double.init)
+            maxHR: IOSUserBodyProfile.current.estimatedMaxHR,
+            restingHR: scanner.metrics.exertionRestingHR,
+            physiologySex: IOSUserBodyProfile.current.physiologySex.analyticsValue
         )
         let bestWorkout = workoutsForSelectedDate.compactMap(\.effectiveStrain).max()
-        return [computed, scanner.metrics.strain, bestWorkout]
+        return [computed, detectedDeviceSource == .tracker ? scanner.metrics.strain : nil, bestWorkout]
             .compactMap { $0 }
             .max()
     }
 
     private var effectiveRecoveryScore: Double? {
-        scanner.metrics.recovery
+        switch detectedDeviceSource {
+        case .tracker: return scanner.metrics.recovery
+        case .appleWatch: return health.recoveryScore
+        }
     }
 
     private var displaySteps: Int {
@@ -274,18 +408,16 @@ struct TodayIOSView: View {
             : scanner.metrics.steps
     }
 
-    private var heartRateHeaderText: String {
+    private func heartRateHeaderText(previewSamples samples: [IOSMetricHRSample]) -> String {
         if Calendar.current.isDateInToday(selectedDate) {
+            if detectedDeviceSource == .appleWatch {
+                return watchOrHealthHeartRate.map { "\($0) bpm" } ?? "-- bpm"
+            }
             return scanner.heartRate.map { "\($0) bpm" } ?? "-- bpm"
         }
-        let samples = heartRatePreviewSamples
         guard !samples.isEmpty else { return "-- bpm" }
         let avg = samples.reduce(0) { $0 + $1.bpm } / samples.count
         return "avg \(avg) bpm"
-    }
-
-    private var recoveryAdjustedLoad: Double? {
-        IOSStrainEstimator.recoveryAdjustedLoad(strain: effectiveDailyStrain, recovery: effectiveRecoveryScore)
     }
 
     private var isDisplayingLoggedSnapshot: Bool {
@@ -295,7 +427,8 @@ struct TodayIOSView: View {
     private var awakeDayHRSamples: [IOSMetricHRSample] {
         let sleepIntervals = WarbFitSleepDisplay.intervals(
             health: health.sleepIntervals,
-            whoop: scanner.metrics.whoopSleepIntervals
+            tracker: scanner.metrics.trackerSleepIntervals,
+            source: detectedDeviceSource
         )
         let selectedDayStart = Int(Calendar.current.startOfDay(for: selectedDate).timeIntervalSince1970)
         let morningCutoff = selectedDayStart + 14 * 3600
@@ -317,7 +450,9 @@ struct TodayIOSView: View {
                 byTs[sample.ts] = sample.bpm
             }
         }
-        if let active = recorder.active, Calendar.current.isDate(active.startedAt, inSameDayAs: selectedDate) {
+        if let active = recorder.active,
+           Calendar.current.isDate(active.startedAt, inSameDayAs: selectedDate),
+           warbFitActiveWorkout(active, belongsTo: detectedDeviceSource) {
             for sample in active.hrSamples where sample.ts >= startTs {
                 byTs[sample.ts] = sample.bpm
             }
@@ -328,31 +463,99 @@ struct TodayIOSView: View {
     }
 
     private var dailyCalculationSamples: [IOSMetricHRSample] {
-        scanner.metrics.dailyHRSamples.isEmpty ? scanner.metrics.todayHRSamples : scanner.metrics.dailyHRSamples
+        switch detectedDeviceSource {
+        case .tracker:
+            let samples = scanner.metrics.dailyHRSamples.isEmpty ? scanner.metrics.todayHRSamples : scanner.metrics.dailyHRSamples
+            return warbFitMetricSamples(samples, for: .tracker)
+        case .appleWatch:
+            return warbFitMetricSamples(health.dailyHRSamples, for: .appleWatch)
+        }
     }
 
     private var fullHeartRateSamples: [IOSMetricHRSample] {
-        scanner.metrics.dailyHRSamples.isEmpty ? scanner.metrics.todayHRSamples : scanner.metrics.dailyHRSamples
+        let daySamples: [IOSMetricHRSample]
+        switch detectedDeviceSource {
+        case .tracker:
+            let samples = scanner.metrics.dailyHRSamples.isEmpty ? scanner.metrics.todayHRSamples : scanner.metrics.dailyHRSamples
+            daySamples = warbFitMetricSamples(samples, for: .tracker)
+        case .appleWatch:
+            daySamples = warbFitMetricSamples(health.dailyHRSamples, for: .appleWatch)
+        }
+        return mergedMetricSamples(daySamples + workoutHeartRateSamples + activeWorkoutHeartRateSamples)
     }
 
-    private var heartRatePreviewSamples: [IOSMetricHRSample] {
-        samplesForSelectedDay(fullHeartRateSamples)
+    private var watchOrHealthHeartRate: Int? {
+        recorder.active.map { warbFitActiveWorkout($0, belongsTo: .appleWatch) } == true
+            ? recorder.active?.hrSamples.last?.bpm
+            : warbFitMetricSamples(health.dailyHRSamples, for: .appleWatch).last?.bpm
     }
 
-    private func samplesForSelectedDay(_ samples: [IOSMetricHRSample]) -> [IOSMetricHRSample] {
-        let dayStart = Int(Calendar.current.startOfDay(for: selectedDate).timeIntervalSince1970)
-        let dayEnd = dayStart + 24 * 3600
-        return samples
-            .filter { $0.ts >= dayStart && $0.ts < dayEnd }
+    private var workoutHeartRateSamples: [IOSMetricHRSample] {
+        workoutsForSelectedDate
+            .flatMap(\.hrSamples)
+            .sorted { $0.ts < $1.ts }
             .enumerated()
             .map { index, sample in IOSMetricHRSample(id: index, ts: sample.ts, bpm: sample.bpm) }
+    }
+
+    private var activeWorkoutHeartRateSamples: [IOSMetricHRSample] {
+        guard let active = recorder.active,
+              Calendar.current.isDate(active.startedAt, inSameDayAs: selectedDate),
+              warbFitActiveWorkout(active, belongsTo: detectedDeviceSource) else { return [] }
+        return active.hrSamples
+            .sorted { $0.ts < $1.ts }
+            .enumerated()
+            .map { index, sample in IOSMetricHRSample(id: index, ts: sample.ts, bpm: sample.bpm) }
+    }
+
+    private func previewHeartRateSamples(from samples: [IOSMetricHRSample]) -> [IOSMetricHRSample] {
+        let dayStart = Int(Calendar.current.startOfDay(for: selectedDate).timeIntervalSince1970)
+        let dayEnd = dayStart + 24 * 3600
+        let visibleStart = Calendar.current.isDateInToday(selectedDate)
+            ? max(dayStart, Int(Date().timeIntervalSince1970) - 12 * 3600)
+            : dayStart
+        var rows: [IOSMetricHRSample] = []
+        var currentMinute: Int?
+        var bpmTotal = 0
+        var count = 0
+
+        func appendCurrentMinute() {
+            guard let minute = currentMinute, count > 0 else { return }
+            let avg = Double(bpmTotal) / Double(count)
+            rows.append(IOSMetricHRSample(id: rows.count, ts: minute * 60 + 30, bpm: Int(avg.rounded())))
+        }
+
+        for sample in samples where sample.ts >= visibleStart && sample.ts < dayEnd {
+            let minute = sample.ts / 60
+            if currentMinute != nil, currentMinute != minute {
+                appendCurrentMinute()
+                bpmTotal = 0
+                count = 0
+            }
+            currentMinute = minute
+            bpmTotal += sample.bpm
+            count += 1
+        }
+        appendCurrentMinute()
+        return rows
+    }
+
+    private func mergedMetricSamples(_ samples: [IOSMetricHRSample]) -> [IOSMetricHRSample] {
+        var byTs: [Int: Int] = [:]
+        for sample in samples {
+            byTs[sample.ts] = sample.bpm
+        }
+        return byTs.keys.sorted().enumerated().map { index, ts in
+            IOSMetricHRSample(id: index, ts: ts, bpm: byTs[ts] ?? 0)
+        }
     }
 
     private var heartRateIntervals: [HRChartInterval] {
         var intervals: [HRChartInterval] = []
         let sleepIntervals = WarbFitSleepDisplay.intervals(
             health: health.sleepIntervals,
-            whoop: scanner.metrics.whoopSleepIntervals
+            tracker: scanner.metrics.trackerSleepIntervals,
+            source: detectedDeviceSource
         )
         if let sleepStart = sleepIntervals.map(\.start).min(),
            let sleepEnd = sleepIntervals.map(\.end).max(),
@@ -362,9 +565,11 @@ struct TodayIOSView: View {
         intervals.append(contentsOf: workoutsForSelectedDate.map {
             HRChartInterval(start: $0.startedAt, end: $0.endedAt, title: $0.typeName, color: StrandPalette.strain066)
         })
-        intervals.append(contentsOf: scanner.metrics.workouts.map {
-            HRChartInterval(start: $0.start, end: $0.end, title: "Workout", color: StrandPalette.metricAmber)
-        })
+        if detectedDeviceSource == .tracker {
+            intervals.append(contentsOf: scanner.metrics.workouts.map {
+                HRChartInterval(start: $0.start, end: $0.end, title: "Workout", color: StrandPalette.metricAmber)
+            })
+        }
         return intervals
     }
 
@@ -373,7 +578,12 @@ struct TodayIOSView: View {
         guard let start = month?.start, let end = month?.end.addingTimeInterval(-1) else { return }
         Task { @MainActor in
             var scores = await scanner.recoveryScores(from: start, to: end)
+            scores = scores.filter { day, _ in
+                guard let date = Self.date(fromDayString: day) else { return true }
+                return IOSDeviceSource.sourceForDay(date) == .tracker
+            }
             if Calendar.current.isDate(date, inSameDayAs: selectedDate),
+               IOSDeviceSource.sourceForDay(selectedDate) == .tracker,
                let recovery = scanner.metrics.recovery {
                 scores[Self.dayString(selectedDate)] = recovery
             }
@@ -389,75 +599,531 @@ struct TodayIOSView: View {
         return formatter.string(from: date)
     }
 
+    private static func date(fromDayString day: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: day)
+    }
+
     private var effectiveSleepHours: Double {
         WarbFitSleepDisplay.hours(
             healthHours: health.sleepHours,
-            whoopHours: scanner.metrics.whoopSleepHours,
+            trackerHours: scanner.metrics.trackerSleepHours,
             healthIntervals: health.sleepIntervals,
-            whoopIntervals: scanner.metrics.whoopSleepIntervals
+            trackerIntervals: scanner.metrics.trackerSleepIntervals,
+            source: detectedDeviceSource
         )
+    }
+
+    private var detectedDeviceSource: IOSDeviceSource {
+        warbFitDetectedDeviceSource(
+            scanner: scanner,
+            health: health,
+            preferredSource: preferredDeviceSource
+        )
+    }
+
+    private var preferredDeviceSource: IOSDeviceSource {
+        _ = selectedDeviceSource
+        return IOSDeviceSource.sourceForDay(selectedDate)
+    }
+
+    private var sourceAtStartOfSelectedDay: IOSDeviceSource {
+        IOSDeviceSource.source(for: Calendar.current.startOfDay(for: selectedDate))
     }
 
 }
 
 private struct LiveIOSView: View {
-    @EnvironmentObject private var scanner: IOSWhoopScanner
+    @EnvironmentObject private var scanner: IOSTrackerScanner
+    @EnvironmentObject private var health: IOSHealthStore
+    @EnvironmentObject private var recorder: IOSWorkoutRecorder
+    @EnvironmentObject private var watchWorkoutBridge: IOSWatchWorkoutBridge
+    @AppStorage(IOSDeviceSource.storageKey) private var selectedDeviceSource = IOSDeviceSource.tracker.rawValue
+    @AppStorage(IOSTrackerScanner.selectedBluetoothDeviceIDKey) private var selectedBluetoothDeviceID = ""
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                LiveSummaryCard()
-                HStack(spacing: 10) {
-                    ActionButton(title: scanner.isConnected ? "Disconnect" : "Scan", icon: scanner.isConnected ? "xmark" : "dot.radiowaves.left.and.right", color: scanner.isConnected ? StrandPalette.statusCritical : StrandPalette.accent) {
-                        scanner.isConnected ? scanner.disconnect() : scanner.start()
+                DeviceSourcePreferenceCard(
+                    selectedSourceRawValue: $selectedDeviceSource,
+                    selectedBluetoothDeviceID: $selectedBluetoothDeviceID,
+                    bluetoothDevices: scanner.bluetoothDeviceOptions,
+                    bluetoothStatus: bluetoothTrackerStatus,
+                    bluetoothAvailable: bluetoothTrackerAvailable,
+                    companionStatus: companionStatus,
+                    companionAvailable: companionAvailable,
+                    onSelectSource: selectDeviceSource,
+                    onSelectBluetoothDevice: { scanner.selectBluetoothDevice(id: $0) },
+                    onScanBluetooth: { scanner.start() }
+                )
+                DetectedDeviceSourceCard(source: detectedDeviceSource)
+                if detectedDeviceSource == .tracker {
+                    LiveSummaryCard()
+                    HStack(spacing: 10) {
+                        ActionButton(title: scanner.isConnected ? "Disconnect" : "Scan", icon: scanner.isConnected ? "xmark" : "dot.radiowaves.left.and.right", color: scanner.isConnected ? StrandPalette.statusCritical : StrandPalette.accent) {
+                            scanner.isConnected ? scanner.disconnect() : scanner.start()
+                        }
+                        ActionButton(title: "Buzz", icon: "iphone.radiowaves.left.and.right", color: StrandPalette.metricPurple) {
+                            scanner.buzz()
+                        }
+                        .disabled(!scanner.isBondReady)
                     }
-                    ActionButton(title: "Buzz", icon: "iphone.radiowaves.left.and.right", color: StrandPalette.metricPurple) {
-                        scanner.buzz()
-                    }
-                    .disabled(!scanner.isBondReady)
+                    LogPanel(lines: scanner.logLines)
+                } else {
+                    WatchWorkoutLiveCard()
+                    SourceRow(
+                        name: detectedDeviceSource.statusTitle,
+                        status: watchWorkoutBridge.activationStatus,
+                        icon: detectedDeviceSource.icon,
+                        color: watchWorkoutBridge.isReachable ? StrandPalette.accent : StrandPalette.textTertiary
+                    )
                 }
-                LogPanel(lines: scanner.logLines)
             }
             .padding(16)
             .padding(.bottom, 96)
         }
         .scrollContentBackground(.hidden)
-        .refreshable { await scanner.refreshDeviceMetricsNow() }
+        .refreshable { await refreshCurrentSource() }
+        .onAppear { scanner.refreshBluetoothDeviceOptions() }
+    }
+
+    private var detectedDeviceSource: IOSDeviceSource {
+        warbFitDetectedDeviceSource(
+            scanner: scanner,
+            health: health,
+            watchWorkoutBridge: watchWorkoutBridge,
+            preferredSource: preferredDeviceSource
+        )
+    }
+
+    private var preferredDeviceSource: IOSDeviceSource {
+        _ = selectedDeviceSource
+        return IOSDeviceSource.sourceForDay(Date())
+    }
+
+    private var bluetoothTrackerAvailable: Bool {
+        scanner.isConnected || scanner.heartRate != nil || !scanner.bluetoothDeviceOptions.isEmpty
+    }
+
+    private var bluetoothTrackerStatus: String {
+        if scanner.isConnected {
+            return scanner.deviceName.map { "\($0) connected" } ?? "Connected"
+        }
+        if !scanner.bluetoothDeviceOptions.isEmpty {
+            return "\(scanner.bluetoothDeviceOptions.count) tracker\(scanner.bluetoothDeviceOptions.count == 1 ? "" : "s") available"
+        }
+        if scanner.heartRate != nil { return "Receiving heart rate" }
+        return "Not connected"
+    }
+
+    private var companionAvailable: Bool {
+        watchWorkoutBridge.isCompanionAvailable ||
+            watchWorkoutBridge.isReachable ||
+            watchWorkoutBridge.isWatchAppInstalled ||
+            watchWorkoutBridge.isPaired
+    }
+
+    private var companionStatus: String {
+        if watchWorkoutBridge.liveWorkout != nil { return "Live workout" }
+        if watchWorkoutBridge.isReachable { return "Ready" }
+        if watchWorkoutBridge.isWatchAppInstalled { return "Watch app installed" }
+        if watchWorkoutBridge.isPaired { return "Watch paired" }
+        if !watchWorkoutBridge.isSupported { return "Not supported" }
+        return "Not connected"
+    }
+
+    private func selectDeviceSource(_ source: IOSDeviceSource) {
+        let effectiveAt = IOSDeviceSource.setCurrent(source)
+        selectedDeviceSource = source.rawValue
+        if source == .appleWatch {
+            health.refresh()
+            health.importRecentWorkouts(into: recorder, since: effectiveAt)
+        }
+    }
+
+    private func refreshCurrentSource() async {
+        if preferredDeviceSource == .appleWatch {
+            health.refresh()
+            health.importRecentWorkouts(
+                into: recorder,
+                since: IOSDeviceSource.currentSelectionEffectiveAt()
+            )
+        } else {
+            await scanner.refreshDeviceMetricsNow()
+        }
+    }
+}
+
+private struct DeviceSourcePreferenceCard: View {
+    @Binding var selectedSourceRawValue: String
+    @Binding var selectedBluetoothDeviceID: String
+    let bluetoothDevices: [IOSBluetoothDeviceOption]
+    let bluetoothStatus: String
+    let bluetoothAvailable: Bool
+    let companionStatus: String
+    let companionAvailable: Bool
+    let onSelectSource: (IOSDeviceSource) -> Void
+    let onSelectBluetoothDevice: (UUID) -> Void
+    let onScanBluetooth: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("DEVICE")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(StrandPalette.textTertiary)
+                Spacer()
+                Text(selectedSource.statusTitle)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(selectedSource == .tracker ? StrandPalette.accent : StrandPalette.metricCyan)
+            }
+            Menu {
+                if bluetoothDevices.isEmpty {
+                    Button {
+                        onSelectSource(.tracker)
+                        onScanBluetooth()
+                    } label: {
+                        Label("Scan for Bluetooth tracker", systemImage: IOSDeviceSource.tracker.icon)
+                    }
+                } else {
+                    Section("Bluetooth") {
+                        ForEach(bluetoothDevices) { device in
+                            Button {
+                                onSelectSource(.tracker)
+                                selectedBluetoothDeviceID = device.id.uuidString
+                                onSelectBluetoothDevice(device.id)
+                            } label: {
+                                Label(device.displayName, systemImage: IOSDeviceSource.tracker.icon)
+                            }
+                        }
+                    }
+                }
+                Divider()
+                Button {
+                    onSelectSource(.appleWatch)
+                    selectedBluetoothDeviceID = ""
+                } label: {
+                    Label("Companion app", systemImage: IOSDeviceSource.appleWatch.icon)
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: selectedSource.icon)
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(selectedSource == .tracker ? StrandPalette.accent : StrandPalette.metricCyan)
+                        .frame(width: 28, height: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(selectedDeviceTitle)
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(StrandPalette.textPrimary)
+                            .lineLimit(1)
+                        Text(selectedDeviceStatus)
+                            .font(.caption)
+                            .foregroundStyle(selectedDeviceAvailable ? StrandPalette.textSecondary : StrandPalette.textTertiary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
+                .padding(10)
+                .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 10))
+                .overlay { RoundedRectangle(cornerRadius: 10).stroke(StrandPalette.hairline, lineWidth: 1) }
+            }
+            .buttonStyle(.plain)
+            VStack(alignment: .leading, spacing: 8) {
+                availabilityLine(source: .tracker, status: bluetoothStatus, available: bluetoothAvailable)
+                availabilityLine(source: .appleWatch, status: companionStatus, available: companionAvailable)
+            }
+        }
+        .padding(12)
+        .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(StrandPalette.hairline, lineWidth: 1) }
+    }
+
+    private var selectedSource: IOSDeviceSource {
+        IOSDeviceSource.value(from: selectedSourceRawValue)
+    }
+
+    private var selectedBluetoothDevice: IOSBluetoothDeviceOption? {
+        if let id = UUID(uuidString: selectedBluetoothDeviceID),
+           let selected = bluetoothDevices.first(where: { $0.id == id }) {
+            return selected
+        }
+        return bluetoothDevices.first(where: \.isCurrent) ?? bluetoothDevices.first
+    }
+
+    private var selectedDeviceTitle: String {
+        switch selectedSource {
+        case .tracker:
+            return selectedBluetoothDevice?.displayName ?? IOSDeviceSource.tracker.title
+        case .appleWatch:
+            return IOSDeviceSource.appleWatch.title
+        }
+    }
+
+    private var selectedDeviceStatus: String {
+        switch selectedSource {
+        case .tracker:
+            return selectedBluetoothDevice?.status ?? bluetoothStatus
+        case .appleWatch:
+            return companionStatus
+        }
+    }
+
+    private var selectedDeviceAvailable: Bool {
+        switch selectedSource {
+        case .tracker: return bluetoothAvailable
+        case .appleWatch: return companionAvailable
+        }
+    }
+
+    private func availabilityLine(source: IOSDeviceSource, status: String, available: Bool) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: source.icon)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(source == .tracker ? StrandPalette.accent : StrandPalette.metricCyan)
+                .frame(width: 20)
+            Text(source.title)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(StrandPalette.textPrimary)
+            Spacer()
+            Text(status)
+                .font(.caption)
+                .foregroundStyle(available ? StrandPalette.textSecondary : StrandPalette.textTertiary)
+        }
+    }
+}
+
+private struct DetectedDeviceSourceCard: View {
+    let source: IOSDeviceSource
+
+    var body: some View {
+        SourceRow(
+            name: "Active device",
+            status: source.statusTitle,
+            icon: source.icon,
+            color: source == .tracker ? StrandPalette.accent : StrandPalette.metricCyan
+        )
+    }
+}
+
+private struct WatchWorkoutLiveCard: View {
+    @EnvironmentObject private var watchWorkoutBridge: IOSWatchWorkoutBridge
+
+    var body: some View {
+        if let workout = watchWorkoutBridge.liveWorkout {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top) {
+                    Label(workout.workoutName, systemImage: "waveform.path.ecg")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    Spacer()
+                    Text(workout.isPaused ? "Paused" : "Live")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(workout.isPaused ? StrandPalette.metricAmber : StrandPalette.accent)
+                }
+                HStack(spacing: 10) {
+                    ScoreCard(title: "Live HR", value: workout.heartRate.map { "\($0)" } ?? "--", unit: "bpm", color: StrandPalette.zone3)
+                    ScoreCard(title: "Time", value: elapsedText(workout.elapsedSeconds), unit: "", color: StrandPalette.accent)
+                }
+                HStack(spacing: 10) {
+                    ScoreCard(title: "Energy", value: "\(Int(workout.activeEnergyKcal.rounded()))", unit: "kcal", color: StrandPalette.metricAmber)
+                    if showsDistance(workout.workoutTypeId) {
+                        ScoreCard(title: "Distance", value: String(format: "%.2f", workout.distanceMeters / 1609.344), unit: "mi", color: StrandPalette.metricCyan)
+                    }
+                }
+            }
+            .padding(12)
+            .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 12))
+            .overlay { RoundedRectangle(cornerRadius: 12).stroke(StrandPalette.hairline, lineWidth: 1) }
+        }
+    }
+
+    private func elapsedText(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let seconds = total % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    private func showsDistance(_ workoutTypeId: String) -> Bool {
+        ["run", "hiking", "treadmill", "swim"].contains(workoutTypeId)
     }
 }
 
 private struct ActivityIOSView: View {
-    @EnvironmentObject private var scanner: IOSWhoopScanner
+    @EnvironmentObject private var scanner: IOSTrackerScanner
+    @EnvironmentObject private var health: IOSHealthStore
+    @EnvironmentObject private var recorder: IOSWorkoutRecorder
+    @EnvironmentObject private var watchWorkoutBridge: IOSWatchWorkoutBridge
+    @AppStorage(IOSDeviceSource.storageKey) private var selectedDeviceSource = IOSDeviceSource.tracker.rawValue
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 10) {
-                    ScoreCard(title: "Strain", value: scanner.metrics.strain.map { String(format: "%.1f", $0) } ?? "--", unit: "/21", color: StrandPalette.strainColor(scanner.metrics.strain ?? 0))
-                    ScoreCard(title: "Motion", value: "\(scanner.metrics.activityPoints)", unit: "pts", color: StrandPalette.metricAmber)
+                    ScoreCard(title: "Exertion", value: effectiveStrain.map { String(format: "%.1f", $0) } ?? "--", unit: "/21", color: StrandPalette.strainColor(effectiveStrain ?? 0))
+                    ScoreCard(title: secondaryMetricTitle, value: secondaryMetricValue, unit: secondaryMetricUnit, color: StrandPalette.metricAmber)
                 }
                 HStack(spacing: 10) {
-                    ScoreCard(title: "Exercise", value: "\(scanner.metrics.exerciseMinutes)", unit: "min", color: StrandPalette.strain066)
-                    ScoreCard(title: "Workouts", value: "\(scanner.metrics.workouts.count)", unit: "", color: StrandPalette.metricCyan)
+                    ScoreCard(title: "Exercise", value: "\(exerciseMinutes)", unit: "min", color: StrandPalette.strain066)
+                    ScoreCard(title: "Workouts", value: "\(workoutCount)", unit: "", color: StrandPalette.metricCyan)
                 }
-                SourceRow(name: "Activity Source", status: "fitness tracker HR and gravity samples from local device store", icon: "waveform.path.ecg", color: StrandPalette.accent)
+                SourceRow(name: "Activity Source", status: sourceStatus, icon: preferredDeviceSource.icon, color: StrandPalette.accent)
             }
             .padding(16)
             .padding(.bottom, 96)
         }
         .scrollDismissesKeyboard(.interactively)
-        .refreshable { await scanner.refreshDeviceMetricsNow() }
+        .refreshable { await refreshCurrentSource() }
+    }
+
+    private var preferredDeviceSource: IOSDeviceSource {
+        _ = selectedDeviceSource
+        return IOSDeviceSource.sourceForDay(Date())
+    }
+
+    private var todaysWorkouts: [IOSLoggedWorkout] {
+        recorder.workouts.filter {
+            Calendar.current.isDateInToday($0.startedAt) &&
+                warbFitLoggedWorkout($0, belongsTo: preferredDeviceSource)
+        }
+    }
+
+    private var activeWorkout: IOSActiveWorkout? {
+        guard let active = recorder.active,
+              Calendar.current.isDateInToday(active.startedAt),
+              warbFitActiveWorkout(active, belongsTo: preferredDeviceSource) else { return nil }
+        return active
+    }
+
+    private var effectiveStrain: Double? {
+        switch preferredDeviceSource {
+        case .tracker:
+            return scanner.metrics.strain
+        case .appleWatch:
+            let computed = IOSStrainEstimator.awakeDayStrain(
+                metricSamples: appleWatchHRSamples,
+                maxHR: IOSUserBodyProfile.current.estimatedMaxHR,
+                restingHR: health.exertionRestingHR,
+                physiologySex: IOSUserBodyProfile.current.physiologySex.analyticsValue
+            )
+            let bestWorkout = todaysWorkouts.compactMap(\.effectiveStrain).max()
+            let allDayHealthStrain = sourceAtStartOfToday == .appleWatch ? health.dailyStrain : nil
+            return [computed, allDayHealthStrain, bestWorkout]
+                .compactMap { $0 }
+                .max()
+        }
+    }
+
+    private var appleWatchHRSamples: [IOSMetricHRSample] {
+        var byTs: [Int: Int] = [:]
+        for sample in warbFitMetricSamples(health.dailyHRSamples, for: .appleWatch) {
+            byTs[sample.ts] = sample.bpm
+        }
+        for workout in todaysWorkouts {
+            for sample in workout.hrSamples {
+                byTs[sample.ts] = sample.bpm
+            }
+        }
+        if let activeWorkout {
+            for sample in activeWorkout.hrSamples {
+                byTs[sample.ts] = sample.bpm
+            }
+        }
+        return byTs.keys.sorted().enumerated().map { index, ts in
+            IOSMetricHRSample(id: index, ts: ts, bpm: byTs[ts] ?? 0)
+        }
+    }
+
+    private var exerciseMinutes: Int {
+        switch preferredDeviceSource {
+        case .tracker:
+            return scanner.metrics.exerciseMinutes
+        case .appleWatch:
+            let logged = todaysWorkouts.reduce(0.0) { $0 + $1.durationSeconds }
+            let active = activeWorkout?.durationSeconds ?? 0
+            return Int(((logged + active) / 60).rounded())
+        }
+    }
+
+    private var workoutCount: Int {
+        switch preferredDeviceSource {
+        case .tracker:
+            return scanner.metrics.workouts.count
+        case .appleWatch:
+            return todaysWorkouts.count + (activeWorkout == nil ? 0 : 1)
+        }
+    }
+
+    private var secondaryMetricTitle: String {
+        preferredDeviceSource == .tracker ? "Motion" : "HR Samples"
+    }
+
+    private var secondaryMetricValue: String {
+        switch preferredDeviceSource {
+        case .tracker:
+            return "\(scanner.metrics.activityPoints)"
+        case .appleWatch:
+            return "\(appleWatchHRSamples.count)"
+        }
+    }
+
+    private var secondaryMetricUnit: String {
+        preferredDeviceSource == .tracker ? "pts" : "pts"
+    }
+
+    private var sourceStatus: String {
+        switch preferredDeviceSource {
+        case .tracker:
+            return "Bluetooth tracker HR and motion samples from local device store"
+        case .appleWatch:
+            return watchWorkoutBridge.liveWorkout == nil
+                ? health.status
+                : "Live companion workout plus Apple Health activity"
+        }
+    }
+
+    private var sourceAtStartOfToday: IOSDeviceSource {
+        IOSDeviceSource.source(for: Calendar.current.startOfDay(for: Date()))
+    }
+
+    private func refreshCurrentSource() async {
+        switch preferredDeviceSource {
+        case .tracker:
+            await scanner.refreshDeviceMetricsNow()
+        case .appleWatch:
+            health.refresh()
+            health.importRecentWorkouts(
+                into: recorder,
+                since: IOSDeviceSource.currentSelectionEffectiveAt()
+            )
+        }
     }
 }
 
 private struct WorkoutsIOSView: View {
-    @EnvironmentObject private var scanner: IOSWhoopScanner
+    @EnvironmentObject private var scanner: IOSTrackerScanner
+    @EnvironmentObject private var health: IOSHealthStore
     @EnvironmentObject private var recorder: IOSWorkoutRecorder
+    @EnvironmentObject private var watchWorkoutBridge: IOSWatchWorkoutBridge
+    @AppStorage(IOSDeviceSource.storageKey) private var selectedDeviceSource = IOSDeviceSource.tracker.rawValue
     @State private var notesDraft = ""
     @State private var showingPlanEditor = false
     @State private var showingPlans = false
+    @State private var showingWorkoutHistory = false
+    @State private var workoutHistoryLimit = 20
     @State private var selectingType: IOSWorkoutType?
     @State private var editingPlan: IOSWorkoutPlan?
+    @State private var workoutStartStatus: String?
 
     var body: some View {
         ScrollView {
@@ -489,16 +1155,19 @@ private struct WorkoutsIOSView: View {
                     }
                     .padding(12)
                     .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 12))
+                    if let workoutStartStatus {
+                        SourceRow(name: "Workout Start", status: workoutStartStatus, icon: preferredDeviceSource.icon, color: StrandPalette.metricAmber)
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 10) {
                     Text("WORKOUT LOG")
                         .font(.caption.weight(.bold))
                         .foregroundStyle(StrandPalette.textTertiary)
-                    if recorder.workouts.isEmpty {
-                        SourceRow(name: "No logged workouts", status: "Start a workout above, then finish it to save HR, strain, and notes.", icon: "list.bullet.clipboard.fill", color: StrandPalette.textTertiary)
+                    if orderedWorkoutLogs.isEmpty {
+                        SourceRow(name: "No logged workouts", status: "Start a workout above, then finish it to save HR, exertion, and notes.", icon: "list.bullet.clipboard.fill", color: StrandPalette.textTertiary)
                     } else {
-                        ForEach(recorder.workouts) { workout in
+                        ForEach(inlineWorkoutLogs) { workout in
                             NavigationLink {
                                 WorkoutDetailView(workout: workout)
                             } label: {
@@ -506,31 +1175,44 @@ private struct WorkoutsIOSView: View {
                             }
                             .buttonStyle(.plain)
                         }
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("AUTO-DETECTED")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(StrandPalette.textTertiary)
-                    if scanner.metrics.workouts.isEmpty {
-                        SourceRow(name: "No fitness tracker-detected workouts", status: "These appear after historical HR and motion data sync from the strap.", icon: "figure.run", color: StrandPalette.textTertiary)
-                    } else {
-                        ForEach(scanner.metrics.workouts) { workout in
-                            SourceRow(
-                                name: workout.title,
-                                status: "\(workout.start.formatted(date: .abbreviated, time: .shortened)) · \(workout.durationMinutes) min · avg \(workout.avgHR) bpm · max \(workout.maxHR) bpm",
-                                icon: "figure.run",
-                                color: StrandPalette.strain066
-                            )
+                        if orderedWorkoutLogs.count > inlineWorkoutLogs.count {
+                            Button {
+                                workoutHistoryLimit = 20
+                                showingWorkoutHistory = true
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "list.bullet")
+                                        .font(.headline)
+                                        .foregroundStyle(StrandPalette.accent)
+                                        .frame(width: 34, height: 34)
+                                        .background(StrandPalette.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Show More")
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(StrandPalette.textPrimary)
+                                        Text("\(orderedWorkoutLogs.count - inlineWorkoutLogs.count) older workouts")
+                                            .font(.footnote)
+                                            .foregroundStyle(StrandPalette.textSecondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.up.forward")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(StrandPalette.textTertiary)
+                                }
+                                .padding(12)
+                                .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
+                                .overlay { RoundedRectangle(cornerRadius: 10).stroke(StrandPalette.hairline, lineWidth: 1) }
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
+
             }
             .padding(16)
             .padding(.bottom, 96)
         }
-        .refreshable { await scanner.refreshDeviceMetricsNow() }
+        .refreshable { await refreshCurrentSource() }
         .sheet(isPresented: $showingPlanEditor) {
             WorkoutPlanEditorView()
                 .environmentObject(recorder)
@@ -543,6 +1225,15 @@ private struct WorkoutsIOSView: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $showingWorkoutHistory) {
+            WorkoutHistorySheet(
+                workouts: orderedWorkoutLogs,
+                visibleLimit: $workoutHistoryLimit
+            )
+            .environmentObject(recorder)
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+        }
         .sheet(item: $editingPlan) { plan in
             WorkoutPlanEditorView(existingPlan: plan)
                 .environmentObject(recorder)
@@ -551,24 +1242,25 @@ private struct WorkoutsIOSView: View {
         }
         .sheet(item: $selectingType) { type in
             PlanSelectionView(type: type) { plan in
-                recorder.start(type, plan: plan)
-                notesDraft = ""
-                selectingType = nil
-                if !scanner.isConnected {
-                    scanner.start()
-                }
+                beginWorkout(type, plan: plan)
             } startEmpty: {
-                recorder.start(type)
-                notesDraft = ""
-                selectingType = nil
-                if !scanner.isConnected {
-                    scanner.start()
-                }
+                beginWorkout(type)
             }
             .environmentObject(recorder)
             .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
         }
+    }
+
+    private var orderedWorkoutLogs: [IOSLoggedWorkout] {
+        recorder.workouts.sorted {
+            if $0.startedAt != $1.startedAt { return $0.startedAt > $1.startedAt }
+            return $0.endedAt > $1.endedAt
+        }
+    }
+
+    private var inlineWorkoutLogs: [IOSLoggedWorkout] {
+        Array(orderedWorkoutLogs.prefix(3))
     }
 
     private func start(_ type: IOSWorkoutType) {
@@ -577,16 +1269,199 @@ private struct WorkoutsIOSView: View {
             selectingType = type
             return
         }
-        recorder.start(type)
+        beginWorkout(type)
+    }
+
+    private func beginWorkout(_ type: IOSWorkoutType, plan: IOSWorkoutPlan? = nil) {
+        guard canStartWorkoutFromCurrentSource else {
+            workoutStartStatus = appleWatchStartUnavailableMessage
+            selectingType = nil
+            return
+        }
+        recorder.start(type, plan: plan, source: activeWorkoutSource)
         notesDraft = ""
-        if !scanner.isConnected {
+        workoutStartStatus = nil
+        selectingType = nil
+        if shouldStartBluetoothTracker {
             scanner.start()
+        }
+    }
+
+    private var shouldStartBluetoothTracker: Bool {
+        !scanner.isConnected &&
+            warbFitDetectedDeviceSource(
+                scanner: scanner,
+                health: health,
+                watchWorkoutBridge: watchWorkoutBridge,
+                preferredSource: preferredDeviceSource
+            ) == .tracker
+    }
+
+    private var preferredDeviceSource: IOSDeviceSource {
+        _ = selectedDeviceSource
+        return IOSDeviceSource.sourceForDay(Date())
+    }
+
+    private var activeWorkoutSource: IOSActiveWorkoutSource {
+        preferredDeviceSource == .appleWatch ? .companion : .phone
+    }
+
+    private var canStartWorkoutFromCurrentSource: Bool {
+        preferredDeviceSource == .tracker || watchWorkoutBridge.isReachable
+    }
+
+    private var appleWatchStartUnavailableMessage: String {
+        if !watchWorkoutBridge.isSupported {
+            return "Apple Watch companion sync is not supported on this device."
+        }
+        if !watchWorkoutBridge.isPaired {
+            return "Pair an Apple Watch before starting a companion workout from the phone."
+        }
+        if !watchWorkoutBridge.isWatchAppInstalled {
+            return "Install WarbFit on Apple Watch before starting a companion workout from the phone."
+        }
+        return "Open WarbFit on Apple Watch, then start the workout again from the phone."
+    }
+
+    private func refreshCurrentSource() async {
+        if preferredDeviceSource == .appleWatch {
+            health.refresh()
+            health.importRecentWorkouts(
+                into: recorder,
+                since: IOSDeviceSource.currentSelectionEffectiveAt()
+            )
+        } else {
+            await scanner.refreshDeviceMetricsNow()
         }
     }
 }
 
+private struct WorkoutHistorySheet: View {
+    let workouts: [IOSLoggedWorkout]
+    @Binding var visibleLimit: Int
+    @Environment(\.dismiss) private var dismiss
+
+    private var visibleWorkouts: [IOSLoggedWorkout] {
+        Array(workouts.prefix(min(visibleLimit, workouts.count)))
+    }
+
+    private var remainingCount: Int {
+        max(0, workouts.count - visibleWorkouts.count)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if workouts.isEmpty {
+                        SourceRow(name: "No logged workouts", status: "Start and finish a workout to save it here.", icon: "list.bullet.clipboard.fill", color: StrandPalette.textTertiary)
+                    } else {
+                        ForEach(visibleWorkouts) { workout in
+                            NavigationLink {
+                                WorkoutDetailView(workout: workout)
+                            } label: {
+                                WorkoutHistoryRow(workout: workout)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if remainingCount > 0 {
+                            Button {
+                                visibleLimit = min(workouts.count, visibleLimit + 5)
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "plus")
+                                        .font(.headline.weight(.bold))
+                                        .foregroundStyle(StrandPalette.accent)
+                                        .frame(width: 34, height: 34)
+                                        .background(StrandPalette.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Show More")
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(StrandPalette.textPrimary)
+                                        Text("\(remainingCount) older workouts")
+                                            .font(.footnote)
+                                            .foregroundStyle(StrandPalette.textSecondary)
+                                    }
+                                    Spacer()
+                                }
+                                .padding(12)
+                                .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
+                                .overlay { RoundedRectangle(cornerRadius: 10).stroke(StrandPalette.hairline, lineWidth: 1) }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(16)
+                .padding(.bottom, 32)
+            }
+            .background(StrandPalette.surfaceBase.ignoresSafeArea())
+            .navigationTitle("Workout Log")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct WorkoutHistoryRow: View {
+    let workout: IOSLoggedWorkout
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.headline)
+                .foregroundStyle(StrandPalette.strain066)
+                .frame(width: 34, height: 34)
+                .background(StrandPalette.strain066.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(workout.typeName)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(StrandPalette.textPrimary)
+                    .lineLimit(1)
+
+                Text("\(workout.startedAt.formatted(date: .abbreviated, time: .shortened)) · \(durationText)")
+                    .font(.footnote)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                    .lineLimit(1)
+
+                Text("avg \(workout.avgHR.map(String.init) ?? "--") bpm · max \(workout.maxHR.map(String.init) ?? "--") bpm · exertion \(workout.effectiveStrain.map { String(format: "%.1f", $0) } ?? "--")")
+                    .font(.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(StrandPalette.textTertiary)
+        }
+        .padding(12)
+        .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
+        .overlay { RoundedRectangle(cornerRadius: 10).stroke(StrandPalette.hairline, lineWidth: 1) }
+    }
+
+    private var durationText: String {
+        let minutes = max(1, Int((workout.durationSeconds / 60).rounded()))
+        return "\(minutes) min"
+    }
+
+    private var icon: String {
+        IOSWorkoutType.all.first(where: { $0.id == workout.typeId })?.icon ?? "figure.run"
+    }
+}
+
 private struct ActiveWorkoutCard: View {
-    @EnvironmentObject private var scanner: IOSWhoopScanner
+    @EnvironmentObject private var scanner: IOSTrackerScanner
     @EnvironmentObject private var recorder: IOSWorkoutRecorder
     let active: IOSActiveWorkout
     @Binding var notes: String
@@ -605,9 +1480,9 @@ private struct ActiveWorkoutCard: View {
             }
 
             HStack(spacing: 10) {
-                ScoreCard(title: "Live HR", value: scanner.heartRate.map { "\($0)" } ?? "--", unit: "bpm", color: StrandPalette.zone3)
+                ScoreCard(title: "Live HR", value: liveHeartRate.map { "\($0)" } ?? "--", unit: "bpm", color: StrandPalette.zone3)
                 let activeStrain = recorder.strain(for: active.hrSamples, workoutTypeId: active.type.id)
-                ScoreCard(title: "Strain", value: activeStrain.map { String(format: "%.1f", $0) } ?? "--", unit: activeStrain == nil ? "" : "/21", color: StrandPalette.strainColor(activeStrain ?? 0))
+                ScoreCard(title: "Exertion", value: activeStrain.map { String(format: "%.1f", $0) } ?? "--", unit: activeStrain == nil ? "" : "/21", color: StrandPalette.strainColor(activeStrain ?? 0))
             }
             HStack(spacing: 10) {
                 ScoreCard(title: "Avg HR", value: active.avgHR.map { "\($0)" } ?? "--", unit: "bpm", color: StrandPalette.metricCyan)
@@ -681,6 +1556,12 @@ private struct ActiveWorkoutCard: View {
         .padding(12)
         .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 12))
         .overlay { RoundedRectangle(cornerRadius: 12).stroke(StrandPalette.hairline, lineWidth: 1) }
+    }
+
+    private var liveHeartRate: Int? {
+        active.source == .companion
+            ? active.hrSamples.last?.bpm
+            : (scanner.heartRate ?? active.hrSamples.last?.bpm)
     }
 }
 
@@ -1012,13 +1893,28 @@ private struct StrengthExerciseLogView: View {
     let exercise: IOSStrengthPlanExercise
 
     var body: some View {
+        let showsLastWeights = hasPreviousWeights
         VStack(alignment: .leading, spacing: 8) {
             Text("\(exercise.name) · \(exercise.sets)x\(exercise.reps)")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(StrandPalette.textPrimary)
+            if showsLastWeights {
+                HStack(spacing: 10) {
+                    Text("Set")
+                        .frame(width: 48, alignment: .leading)
+                    Text("Weight")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("")
+                        .frame(width: 24, alignment: .leading)
+                    Text("Last")
+                        .frame(width: 64, alignment: .leading)
+                }
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(StrandPalette.textTertiary)
+            }
             ForEach(1...max(1, exercise.sets), id: \.self) { setIndex in
                 HStack(spacing: 10) {
-                    Text("Set \(setIndex)")
+                    Text(showsLastWeights ? "\(setIndex)" : "Set \(setIndex)")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(StrandPalette.textSecondary)
                         .frame(width: 48, alignment: .leading)
@@ -1031,11 +1927,12 @@ private struct StrengthExerciseLogView: View {
                     Text("lb")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(StrandPalette.textTertiary)
-                    if let previous = previousWeight(setIndex) {
-                        Text("Last \(previous)")
+                        .frame(width: 24, alignment: .leading)
+                    if showsLastWeights {
+                        Text(previousWeight(setIndex) ?? "--")
                             .font(.caption)
                             .foregroundStyle(StrandPalette.textTertiary)
-                            .frame(minWidth: 70, alignment: .leading)
+                            .frame(width: 64, alignment: .leading)
                     }
                 }
             }
@@ -1055,6 +1952,10 @@ private struct StrengthExerciseLogView: View {
     private func previousWeight(_ setIndex: Int) -> String? {
         guard let planId = active.plan?.id else { return nil }
         return recorder.previousWeight(planId: planId, exerciseId: exercise.id, setIndex: setIndex, before: active.startedAt)
+    }
+
+    private var hasPreviousWeights: Bool {
+        (1...max(1, exercise.sets)).contains { previousWeight($0) != nil }
     }
 }
 
@@ -1280,7 +2181,7 @@ private struct LoggedWorkoutRow: View {
             }
 
             HStack(spacing: 10) {
-                ScoreCard(title: "Strain", value: workout.effectiveStrain.map { String(format: "%.1f", $0) } ?? "--", unit: "/21", color: StrandPalette.strainColor(workout.effectiveStrain ?? 0))
+                ScoreCard(title: "Exertion", value: workout.effectiveStrain.map { String(format: "%.1f", $0) } ?? "--", unit: "/21", color: StrandPalette.strainColor(workout.effectiveStrain ?? 0))
                 ScoreCard(title: "Avg HR", value: workout.avgHR.map { "\($0)" } ?? "--", unit: "bpm", color: StrandPalette.metricCyan)
                 ScoreCard(title: "Max HR", value: workout.maxHR.map { "\($0)" } ?? "--", unit: "bpm", color: StrandPalette.metricRose)
             }
@@ -1339,14 +2240,15 @@ private struct HRLineChart: View {
 
 private struct SleepIOSView: View {
     @EnvironmentObject private var health: IOSHealthStore
-    @EnvironmentObject private var scanner: IOSWhoopScanner
+    @EnvironmentObject private var scanner: IOSTrackerScanner
+    @AppStorage(IOSDeviceSource.storageKey) private var selectedDeviceSource = IOSDeviceSource.tracker.rawValue
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 10) {
                     ScoreCard(title: "Sleep", value: String(format: "%.1f", effectiveSleepHours), unit: "h", color: StrandPalette.metricCyan)
-                    ScoreCard(title: "Recovery", value: scanner.metrics.recovery.map { "\(Int($0.rounded()))" } ?? "--", unit: "%", color: scanner.metrics.recovery.map(StrandPalette.recoveryColor) ?? StrandPalette.textTertiary)
+                    ScoreCard(title: "Readiness", value: effectiveRecoveryScore.map { "\(Int($0.rounded()))" } ?? "--", unit: "%", color: effectiveRecoveryScore.map(StrandPalette.recoveryColor) ?? StrandPalette.textTertiary)
                 }
                 NavigationLink {
                     SleepDetailView()
@@ -1365,19 +2267,19 @@ private struct SleepIOSView: View {
                 ForEach(effectiveSleepStages) { stage in
                     SourceRow(name: stage.name, status: String(format: "%.1f hours", stage.hours), icon: "moon.stars.fill", color: sleepColor(stage.name))
                 }
-                SourceRow(name: "Fitness tracker sleep", status: scanner.metrics.whoopSleepStatus, icon: "waveform.path.ecg", color: StrandPalette.metricCyan)
-                SourceRow(name: "Recovery Inputs", status: scanner.metrics.recoveryStatus, icon: "waveform.path.ecg", color: StrandPalette.metricPurple)
-                SourceRow(name: "Fitness tracker HRV", status: scanner.metrics.hrvRMSSD.map { "\(Int($0.rounded())) ms RMSSD" } ?? "Waiting for fitness tracker R-R intervals", icon: "waveform.path.ecg", color: StrandPalette.metricPurple)
-                SourceRow(name: "Fitness tracker resting HR", status: scanner.metrics.restingHR.map { "\($0) bpm" } ?? "Waiting for fitness tracker heart-rate samples", icon: "heart.fill", color: StrandPalette.metricRose)
-                SourceRow(name: "Raw SpO2 Ratio", status: scanner.metrics.sleepSpO2RawRatio.map { String(format: "%.3f red/IR ADC", $0) } ?? "Waiting for fitness tracker raw SpO2 samples", icon: "drop.fill", color: StrandPalette.metricCyan)
-                SourceRow(name: "Skin Temp ADC", status: scanner.metrics.sleepSkinTempRaw.map { String(format: "%.0f raw ADC", $0) } ?? "Waiting for fitness tracker skin-temp samples", icon: "thermometer.medium", color: StrandPalette.metricAmber)
+                SourceRow(name: sleepSourceTitle, status: sleepSourceStatus, icon: detectedDeviceSource.icon, color: StrandPalette.metricCyan)
+                SourceRow(name: "Readiness Inputs", status: recoveryInputStatus, icon: "waveform.path.ecg", color: StrandPalette.metricPurple)
+                SourceRow(name: hrvTitle, status: hrvStatus, icon: "waveform.path.ecg", color: StrandPalette.metricPurple)
+                SourceRow(name: "Resting HR", status: restingHRStatus, icon: "heart.fill", color: StrandPalette.metricRose)
+                if detectedDeviceSource == .tracker {
+                    SourceRow(name: "Raw SpO2 Ratio", status: scanner.metrics.sleepSpO2RawRatio.map { String(format: "%.3f red/IR ADC", $0) } ?? "Waiting for fitness tracker raw SpO2 samples", icon: "drop.fill", color: StrandPalette.metricCyan)
+                    SourceRow(name: "Skin Temp ADC", status: scanner.metrics.sleepSkinTempRaw.map { String(format: "%.0f raw ADC", $0) } ?? "Waiting for fitness tracker skin-temp samples", icon: "thermometer.medium", color: StrandPalette.metricAmber)
+                }
             }
             .padding(16)
             .padding(.bottom, 96)
         }
-        .refreshable {
-            await scanner.refreshDeviceMetricsNow()
-        }
+        .refreshable { await refreshCurrentSource() }
     }
 
     private func sleepColor(_ name: String) -> Color {
@@ -1392,32 +2294,98 @@ private struct SleepIOSView: View {
     private var effectiveSleepHours: Double {
         WarbFitSleepDisplay.hours(
             healthHours: health.sleepHours,
-            whoopHours: scanner.metrics.whoopSleepHours,
+            trackerHours: scanner.metrics.trackerSleepHours,
             healthIntervals: health.sleepIntervals,
-            whoopIntervals: scanner.metrics.whoopSleepIntervals
+            trackerIntervals: scanner.metrics.trackerSleepIntervals,
+            source: detectedDeviceSource
         )
+    }
+
+    private var effectiveRecoveryScore: Double? {
+        switch detectedDeviceSource {
+        case .tracker: return scanner.metrics.recovery
+        case .appleWatch: return health.recoveryScore
+        }
+    }
+
+    private func refreshCurrentSource() async {
+        switch detectedDeviceSource {
+        case .tracker:
+            await scanner.refreshDeviceMetricsNow()
+        case .appleWatch:
+            health.refresh()
+        }
+    }
+
+    private var sleepSourceTitle: String {
+        detectedDeviceSource == .tracker ? "Fitness tracker sleep" : "Apple Health sleep"
+    }
+
+    private var sleepSourceStatus: String {
+        detectedDeviceSource == .tracker ? scanner.metrics.trackerSleepStatus : health.status
+    }
+
+    private var recoveryInputStatus: String {
+        detectedDeviceSource == .tracker ? scanner.metrics.recoveryStatus : health.recoveryStatus
+    }
+
+    private var hrvTitle: String {
+        detectedDeviceSource == .tracker ? "Fitness tracker HRV" : "Apple Health HRV"
+    }
+
+    private var hrvStatus: String {
+        switch detectedDeviceSource {
+        case .tracker:
+            return scanner.metrics.hrvRMSSD.map { "\(Int($0.rounded())) ms RMSSD" } ?? "Waiting for fitness tracker R-R intervals"
+        case .appleWatch:
+            return health.hrvSDNN.map { "\(Int($0.rounded())) ms SDNN" } ?? "Waiting for Apple Health HRV"
+        }
+    }
+
+    private var restingHRStatus: String {
+        switch detectedDeviceSource {
+        case .tracker:
+            return scanner.metrics.restingHR.map { "\($0) bpm" } ?? "Waiting for fitness tracker heart-rate samples"
+        case .appleWatch:
+            return health.restingHR.map { "\($0) bpm" } ?? "Waiting for Apple Health resting HR"
+        }
     }
 
     private var effectiveSleepStages: [IOSSleepStageSummary] {
         WarbFitSleepDisplay.stages(
             health: health.sleepStages,
-            whoop: scanner.metrics.whoopSleepStages,
+            tracker: scanner.metrics.trackerSleepStages,
             healthIntervals: health.sleepIntervals,
-            whoopIntervals: scanner.metrics.whoopSleepIntervals
+            trackerIntervals: scanner.metrics.trackerSleepIntervals,
+            source: detectedDeviceSource
         )
     }
 
     private var effectiveSleepIntervals: [IOSSleepInterval] {
         WarbFitSleepDisplay.intervals(
             health: health.sleepIntervals,
-            whoop: scanner.metrics.whoopSleepIntervals
+            tracker: scanner.metrics.trackerSleepIntervals,
+            source: detectedDeviceSource
         )
+    }
+
+    private var detectedDeviceSource: IOSDeviceSource {
+        warbFitDetectedDeviceSource(
+            scanner: scanner,
+            health: health,
+            preferredSource: preferredDeviceSource
+        )
+    }
+
+    private var preferredDeviceSource: IOSDeviceSource {
+        _ = selectedDeviceSource
+        return IOSDeviceSource.sourceForDay(Date())
     }
 
 }
 
 private struct AlarmIOSView: View {
-    @EnvironmentObject private var scanner: IOSWhoopScanner
+    @EnvironmentObject private var scanner: IOSTrackerScanner
     @State private var wakeTime = Calendar.current.date(bySettingHour: 7, minute: 0, second: 0, of: Date()) ?? Date()
     @State private var status = "Connect your fitness tracker and set a wake time."
 
@@ -1462,10 +2430,16 @@ private struct AlarmIOSView: View {
 }
 
 private struct MoreIOSView: View {
-    @EnvironmentObject private var scanner: IOSWhoopScanner
+    @EnvironmentObject private var scanner: IOSTrackerScanner
+    @EnvironmentObject private var health: IOSHealthStore
     @EnvironmentObject private var recorder: IOSWorkoutRecorder
     @AppStorage("warbfit.ios.backgroundBLE") private var backgroundBLE = true
+    @AppStorage(IOSDeviceSource.storageKey) private var selectedDeviceSource = IOSDeviceSource.tracker.rawValue
     @AppStorage("warbfit.ios.wristSide") private var wristSide = "left"
+    @AppStorage("warbfit.profile.birthday") private var birthdayTime: Double = 0
+    @AppStorage("warbfit.profile.heightCm") private var heightCm: Double = 0
+    @AppStorage("warbfit.profile.weightKg") private var weightKg: Double = 0
+    @AppStorage("warbfit.profile.physiologySex") private var physiologySex = IOSPhysiologySex.other.rawValue
     @State private var backupShareItems: [Any] = []
     @State private var showingBackupShare = false
     @State private var showingBackupImporter = false
@@ -1478,73 +2452,58 @@ private struct MoreIOSView: View {
             VStack(alignment: .leading, spacing: 14) {
                 WarbFitBrandHeader()
                 NavigationLink {
-                    SleepIOSView()
+                    ProfileIOSView()
                 } label: {
-                    SourceRow(name: "Sleep", status: "\(String(format: "%.1f", scanner.metrics.whoopSleepHours)) h · fitness tracker-derived stages", icon: "moon.stars.fill", color: StrandPalette.metricCyan)
+                    SourceRow(
+                        name: "Profile",
+                        status: profileSummary,
+                        icon: "person.crop.circle.fill",
+                        color: StrandPalette.metricPurple
+                    )
                 }
                 .buttonStyle(.plain)
 
                 NavigationLink {
-                    AlarmIOSView()
+                    SleepIOSView()
                 } label: {
-                    SourceRow(name: "Wake Alarm", status: "Set fitness tracker haptic alarm", icon: "alarm.fill", color: StrandPalette.metricCyan)
+                    SourceRow(name: "Sleep", status: "\(String(format: "%.1f", scanner.metrics.trackerSleepHours)) h · fitness tracker-derived stages", icon: "moon.stars.fill", color: StrandPalette.metricCyan)
                 }
                 .buttonStyle(.plain)
 
-                Picker("Fitness tracker wrist", selection: $wristSide) {
-                    Text("Left").tag("left")
-                    Text("Right").tag("right")
-                }
-                .pickerStyle(.segmented)
-                .padding(10)
-                .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
                 Toggle("Background Bluetooth", isOn: $backgroundBLE)
                 ActionButton(title: "Refresh fitness tracker metrics", icon: "externaldrive.fill", color: StrandPalette.accent) {
                     Task { await scanner.refreshDeviceMetricsNow() }
                 }
-                ActionButton(title: scanner.isExportingBackup ? "Preparing Backup" : "Export WarbFit Backup",
-                             icon: "square.and.arrow.up",
-                             color: StrandPalette.metricPurple) {
-                    Task { await prepareBackupShare() }
-                }
-                .disabled(scanner.isExportingBackup || scanner.isRestoringBackup)
-                ActionButton(title: scanner.isRestoringBackup ? "Restoring Backup" : "Import WarbFit Backup",
-                             icon: "square.and.arrow.down",
-                             color: StrandPalette.accent) {
-                    showingBackupImporter = true
-                }
-                .disabled(scanner.isExportingBackup || scanner.isRestoringBackup)
-                if let status = backupStatus ?? scanner.backupExportStatus {
-                    SourceRow(name: "Backup", status: status, icon: "archivebox.fill", color: StrandPalette.metricPurple)
-                }
-                SourceRow(name: "Fitness tracker wrist", status: "Set to \(wristSide.capitalized). Motion is handled from fitness tracker gravity magnitude.", icon: "hand.raised.fill", color: StrandPalette.metricPurple)
-                SourceRow(name: "Data Sources", status: "Recovery, strain, sleep, steps, workouts, HRV, RHR, respiration, raw SpO2, and skin-temp use fitness tracker data stored locally.", icon: "lock.shield.fill", color: StrandPalette.accent)
             }
             .padding(16)
             .padding(.bottom, 96)
         }
         .refreshable { await scanner.refreshDeviceMetricsNow() }
-        .sheet(isPresented: $showingBackupShare) {
-            ShareSheet(items: backupShareItems)
-        }
-        .sheet(isPresented: $showingBackupImporter) {
-            DocumentPicker(allowedContentTypes: [.item], allowsMultipleSelection: true) { urls in
-                restoreImportURLs = urls
-                showingRestoreConfirmation = !urls.isEmpty
-            }
-        }
-        .alert("Restore WarbFit backup?", isPresented: $showingRestoreConfirmation) {
-            Button("Restore", role: .destructive) {
-                let urls = restoreImportURLs
-                restoreImportURLs = []
-                Task { await restoreBackup(from: urls) }
-            }
-            Button("Cancel", role: .cancel) {
-                restoreImportURLs = []
-            }
-        } message: {
-            Text("This replaces the local WarbFit database, workouts, and plans with the selected backup files.")
-        }
+    }
+
+    private var profileSummary: String {
+        let profile = IOSUserBodyProfile(
+            birthday: birthdayTime > 0 ? Date(timeIntervalSince1970: birthdayTime) : nil,
+            heightCm: heightCm > 0 ? heightCm : nil,
+            weightKg: weightKg > 0 ? weightKg : nil,
+            physiologySex: IOSPhysiologySex(rawValue: physiologySex) ?? .notSpecified,
+            trackerWrist: IOSTrackerWrist(rawValue: wristSide) ?? .left
+        )
+        let ageText = profile.ageYears.map { "\(Int($0.rounded(.down)))y" }
+        let bodyText = [
+            ageText,
+            profile.heightCm.map { formatHeight(cm: $0) },
+            profile.weightKg.map { "\(Int((($0 * 2.2046226218).rounded()))) lb" },
+        ]
+        .compactMap { $0 }
+        .joined(separator: " · ")
+        let suffix = bodyText.isEmpty ? "Set profile" : bodyText
+        return "\(profile.trackerWrist.title) wrist · \(suffix)"
+    }
+
+    private func formatHeight(cm: Double) -> String {
+        let totalInches = max(0, Int((cm / 2.54).rounded()))
+        return "\(totalInches / 12) ft \(totalInches % 12) in"
     }
 
     private func prepareBackupShare() async {
@@ -1570,12 +2529,16 @@ private struct MoreIOSView: View {
                                          in: folder,
                                          encoder: encoder)
             let settings = WarbFitBackupSettings(
-                formatVersion: 1,
+                formatVersion: 2,
                 exportedAt: Date(),
                 appDisplayName: Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "WarbFit",
                 bundleIdentifier: Bundle.main.bundleIdentifier ?? "unknown",
                 backgroundBluetooth: backgroundBLE,
-                whoopWrist: wristSide,
+                trackerWrist: wristSide,
+                birthdayTime: birthdayTime > 0 ? birthdayTime : nil,
+                heightCm: heightCm > 0 ? heightCm : nil,
+                weightKg: weightKg > 0 ? weightKg : nil,
+                physiologySex: physiologySex,
                 databaseFile: databaseURL.lastPathComponent,
                 workoutsFile: "warbfit-workouts.json",
                 workoutPlansFile: "warbfit-workout-plans.json"
@@ -1613,8 +2576,8 @@ private struct MoreIOSView: View {
         Created: \(exported)
 
         Keep these files together:
-        - warbfit-whoop.sqlite: local fitness tracker sensor streams, metric logs, sleep, recovery, and strain data.
-        - warbfit-whoop.sqlite-wal / warbfit-whoop.sqlite-shm: included only when SQLite needs sidecar files for a complete backup.
+        - warbfit-tracker.sqlite: local fitness tracker sensor streams, metric logs, sleep, readiness, and exertion data.
+        - warbfit-tracker.sqlite-wal / warbfit-tracker.sqlite-shm: included only when SQLite needs sidecar files for a complete backup.
         - warbfit-workouts.json: logged workouts, notes, routes, workout HR samples, and strength set weights.
         - warbfit-workout-plans.json: saved strength and swim plans.
         - warbfit-settings.json: app identifier and WarbFit settings at export time.
@@ -1664,7 +2627,19 @@ private struct MoreIOSView: View {
             let counts = recorder.restoreBackup(workouts: importedWorkouts, plans: importedPlans)
             if let importedSettings {
                 backgroundBLE = importedSettings.backgroundBluetooth
-                wristSide = importedSettings.whoopWrist
+                wristSide = importedSettings.trackerWrist
+                if let importedBirthday = importedSettings.birthdayTime {
+                    birthdayTime = importedBirthday
+                }
+                if let importedHeight = importedSettings.heightCm {
+                    heightCm = importedHeight
+                }
+                if let importedWeight = importedSettings.weightKg {
+                    weightKg = importedWeight
+                }
+                if let importedSex = importedSettings.physiologySex {
+                    physiologySex = importedSex
+                }
             }
             if restoredDatabase {
                 await scanner.refreshDeviceMetricsNow()
@@ -1718,10 +2693,162 @@ private struct WarbFitBackupSettings: Codable {
     let appDisplayName: String
     let bundleIdentifier: String
     let backgroundBluetooth: Bool
-    let whoopWrist: String
+    let trackerWrist: String
+    let birthdayTime: Double?
+    let heightCm: Double?
+    let weightKg: Double?
+    let physiologySex: String?
     let databaseFile: String
     let workoutsFile: String
     let workoutPlansFile: String
+}
+
+private struct ProfileIOSView: View {
+    @EnvironmentObject private var scanner: IOSTrackerScanner
+    @AppStorage("warbfit.ios.wristSide") private var wristSide = IOSTrackerWrist.left.rawValue
+    @AppStorage("warbfit.profile.birthday") private var storedBirthday: Double = 0
+    @AppStorage("warbfit.profile.heightCm") private var storedHeightCm: Double = 0
+    @AppStorage("warbfit.profile.weightKg") private var storedWeightKg: Double = 0
+    @AppStorage("warbfit.profile.physiologySex") private var physiologySex = IOSPhysiologySex.other.rawValue
+    @State private var birthday = Calendar.current.date(byAdding: .year, value: -30, to: Date()) ?? Date()
+    @State private var feetText = ""
+    @State private var inchesText = ""
+    @State private var weightPoundsText = ""
+    @State private var saveStatus: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                ExplanationHeader(
+                    title: "Profile",
+                    value: profileValue,
+                    color: StrandPalette.metricPurple
+                )
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Which wrist is the device on?")
+                        .font(.headline)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    Picker("Which wrist is the device on?", selection: $wristSide) {
+                        ForEach(IOSTrackerWrist.allCases) { wrist in
+                            Text(wrist.title).tag(wrist.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                .padding(14)
+                .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Body")
+                        .font(.headline)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    DatePicker("Birthday", selection: $birthday, in: ...Date(), displayedComponents: .date)
+                    Picker("Gender / physiology estimate", selection: $physiologySex) {
+                        ForEach(IOSPhysiologySex.profileCases) { sex in
+                            Text(sex.title).tag(sex.rawValue)
+                        }
+                    }
+                    LabeledContent("Height") {
+                        HStack(spacing: 8) {
+                            TextField("ft", text: $feetText)
+                                .keyboardType(.numberPad)
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: 44)
+                            Text("ft")
+                                .foregroundStyle(StrandPalette.textSecondary)
+                            TextField("in", text: $inchesText)
+                                .keyboardType(.decimalPad)
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: 50)
+                            Text("in")
+                                .foregroundStyle(StrandPalette.textSecondary)
+                        }
+                    }
+                    LabeledContent("Weight") {
+                        TextField("lb", text: $weightPoundsText)
+                            .keyboardType(.decimalPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 84)
+                    }
+                }
+                .padding(14)
+                .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
+
+                ActionButton(title: "Save Profile", icon: "checkmark.circle.fill", color: StrandPalette.accent) {
+                    saveProfile()
+                }
+                if let saveStatus {
+                    SourceRow(name: "Profile", status: saveStatus, icon: "person.crop.circle.fill", color: StrandPalette.metricPurple)
+                }
+            }
+            .padding(16)
+            .padding(.bottom, 96)
+        }
+        .navigationTitle("Profile")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Button("Save") {
+                    saveProfile()
+                }
+                Spacer()
+                Button("Done") {
+                    dismissWarbFitKeyboard()
+                }
+            }
+        }
+        .onAppear(perform: loadFields)
+    }
+
+    private var profileValue: String {
+        let years = max(0, Date().timeIntervalSince(birthday) / (365.2425 * 86_400))
+        return "\(Int(years.rounded(.down)))y"
+    }
+
+    private func loadFields() {
+        if physiologySex == "nonbinary" || IOSPhysiologySex(rawValue: physiologySex) == .notSpecified {
+            physiologySex = IOSPhysiologySex.other.rawValue
+        }
+        if storedBirthday > 0 {
+            birthday = Date(timeIntervalSince1970: storedBirthday)
+        }
+        if storedHeightCm > 0 {
+            let totalInches = max(0, Int((storedHeightCm / 2.54).rounded()))
+            feetText = "\(totalInches / 12)"
+            inchesText = "\(totalInches % 12)"
+        } else {
+            feetText = ""
+            inchesText = ""
+        }
+        weightPoundsText = storedWeightKg > 0 ? String(format: "%.0f", storedWeightKg * 2.2046226218) : ""
+    }
+
+    private func saveProfile() {
+        storedBirthday = birthday.timeIntervalSince1970
+        storedHeightCm = parsedHeightCm() ?? 0
+        storedWeightKg = parsedPositive(weightPoundsText).map { $0 / 2.2046226218 } ?? 0
+        dismissWarbFitKeyboard()
+        saveStatus = "Profile saved locally."
+        Task { await scanner.refreshDeviceMetricsNow() }
+    }
+
+    private func parsedHeightCm() -> Double? {
+        let feet = parsedPositive(feetText) ?? 0
+        let inches = parsedPositive(inchesText) ?? 0
+        let totalInches = feet * 12 + inches
+        guard totalInches > 0 else { return nil }
+        return totalInches * 2.54
+    }
+
+    private func parsedPositive(_ text: String) -> Double? {
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty,
+              let value = Double(cleaned.replacingOccurrences(of: ",", with: ".")),
+              value.isFinite,
+              value > 0 else { return nil }
+        return value
+    }
 }
 
 private struct ShareSheet: UIViewControllerRepresentable {
@@ -1770,7 +2897,7 @@ private struct DocumentPicker: UIViewControllerRepresentable {
 }
 
 private struct LiveSummaryCard: View {
-    @EnvironmentObject private var scanner: IOSWhoopScanner
+    @EnvironmentObject private var scanner: IOSTrackerScanner
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -2059,7 +3186,7 @@ private struct LoadGuidanceCard: View {
                 .font(.footnote)
                 .foregroundStyle(StrandPalette.textSecondary)
             if let low = guidance.targetLow, let high = guidance.targetHigh {
-                Text("Suggested strain target: \(String(format: "%.1f", low))-\(String(format: "%.1f", high))")
+                Text("Suggested exertion target: \(String(format: "%.1f", low))-\(String(format: "%.1f", high))")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(StrandPalette.textPrimary)
             }
@@ -2126,7 +3253,7 @@ private struct TodayWorkoutRow: View {
                 Text(workout.typeName)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(StrandPalette.textPrimary)
-                Text("\(durationText) · avg \(workout.avgHR.map(String.init) ?? "--") bpm · strain \(workout.effectiveStrain.map { String(format: "%.1f", $0) } ?? "--")")
+                Text("\(durationText) · avg \(workout.avgHR.map(String.init) ?? "--") bpm · exertion \(workout.effectiveStrain.map { String(format: "%.1f", $0) } ?? "--")")
                     .font(.footnote)
                     .foregroundStyle(StrandPalette.textSecondary)
             }
@@ -2156,7 +3283,7 @@ private struct WorkoutDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 10) {
-                    ScoreCard(title: "Strain", value: workout.effectiveStrain.map { String(format: "%.1f", $0) } ?? "--", unit: "/21", color: StrandPalette.strainColor(workout.effectiveStrain ?? 0))
+                    ScoreCard(title: "Exertion", value: workout.effectiveStrain.map { String(format: "%.1f", $0) } ?? "--", unit: "/21", color: StrandPalette.strainColor(workout.effectiveStrain ?? 0))
                     ScoreCard(title: "Duration", value: "\(max(1, Int((workout.durationSeconds / 60).rounded())))", unit: "min", color: StrandPalette.strain066)
                 }
                 HStack(spacing: 10) {
@@ -2364,6 +3491,7 @@ private struct RingScoreCard: View {
             Text(title.uppercased())
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(StrandPalette.textTertiary)
+                .frame(height: 14)
             ZStack {
                 Circle()
                     .stroke(StrandPalette.surfaceInset, lineWidth: 13)
@@ -2391,26 +3519,34 @@ private struct RingScoreCard: View {
                 .padding(.horizontal, 12)
             }
             .frame(width: 136, height: 136)
-            if let secondaryTitle, let secondaryValueText, let secondaryColor {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(secondaryTitle.uppercased())
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(StrandPalette.textTertiary)
-                    Text(secondaryValueText)
-                        .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(secondaryColor)
-                    Text("/21")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(StrandPalette.textSecondary)
-                }
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            }
+            secondaryMetricRow
         }
         .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 206)
+        .frame(maxWidth: .infinity, minHeight: 206, alignment: .top)
         .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 12))
         .overlay { RoundedRectangle(cornerRadius: 12).stroke(StrandPalette.hairline, lineWidth: 1) }
+    }
+
+    private var secondaryMetricRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            if let secondaryTitle, let secondaryValueText, let secondaryColor {
+                Text(secondaryTitle.uppercased())
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(StrandPalette.textTertiary)
+                Text(secondaryValueText)
+                    .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(secondaryColor)
+                Text("/21")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(StrandPalette.textSecondary)
+            } else {
+                Text(" ")
+                    .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
+            }
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.7)
+        .frame(height: 18)
     }
 }
 
@@ -2504,7 +3640,7 @@ private struct InteractiveHRChart: View {
     var body: some View {
         GeometryReader { proxy in
             let chartSamples = plottedSamples
-            let layout = chartLayout(in: proxy.size)
+            let layout = chartLayout(in: proxy.size, samples: chartSamples)
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
                     .fill(StrandPalette.surfaceInset)
@@ -2559,7 +3695,7 @@ private struct InteractiveHRChart: View {
             .simultaneousGesture(allowsPinchZoom ? MagnificationGesture()
                 .onChanged { value in
                     if zoomCenterTs == nil {
-                        zoomCenterTs = selectedSample?.ts ?? ((fullDomain?.first ?? 0) + (fullDomain?.last ?? 0)) / 2
+                        zoomCenterTs = selectedSample?.ts ?? midpointOfFullDomain
                     }
                     pinchScale = value
                 }
@@ -2577,8 +3713,7 @@ private struct InteractiveHRChart: View {
         }
     }
 
-    private func chartLayout(in size: CGSize) -> HRChartLayout {
-        let chartSamples = plottedSamples
+    private func chartLayout(in size: CGSize, samples chartSamples: [HRChartSample]) -> HRChartLayout {
         guard let first = chartSamples.first?.ts, let last = chartSamples.last?.ts, last > first else {
             return HRChartLayout(plotRect: .zero, firstTs: 0, lastTs: 1, minY: 40, maxY: 120)
         }
@@ -2596,7 +3731,7 @@ private struct InteractiveHRChart: View {
     }
 
     private var plottedSamples: [HRChartSample] {
-        let ordered = samples.sorted { $0.ts < $1.ts }
+        let ordered = orderedSamples(samples)
         let windowed: [HRChartSample]
         if let visibleWindowHours, let last = ordered.last?.ts {
             let start = last - visibleWindowHours * 3600
@@ -2619,13 +3754,43 @@ private struct InteractiveHRChart: View {
         } else {
             windowed = ordered
         }
-        guard averagePerMinute else { return windowed }
-        let buckets = Dictionary(grouping: windowed) { $0.ts / 60 }
-        return buckets.keys.sorted().compactMap { minute in
-            guard let samples = buckets[minute], !samples.isEmpty else { return nil }
-            let avg = Double(samples.reduce(0) { $0 + $1.bpm }) / Double(samples.count)
-            return HRChartSample(id: "minute-\(minute)", ts: minute * 60 + 30, bpm: Int(avg.rounded()))
+        return averagePerMinute ? minuteAveraged(windowed) : windowed
+    }
+
+    private func orderedSamples(_ samples: [HRChartSample]) -> [HRChartSample] {
+        guard samples.count > 1 else { return samples }
+        for index in samples.indices.dropFirst() where samples[index - 1].ts > samples[index].ts {
+            return samples.sorted { $0.ts < $1.ts }
         }
+        return samples
+    }
+
+    private func minuteAveraged(_ samples: [HRChartSample]) -> [HRChartSample] {
+        guard let first = samples.first else { return [] }
+        var rows: [HRChartSample] = []
+        var currentMinute = first.ts / 60
+        var bpmTotal = 0
+        var count = 0
+
+        func appendCurrentMinute() {
+            guard count > 0 else { return }
+            let avg = Double(bpmTotal) / Double(count)
+            rows.append(HRChartSample(id: "minute-\(currentMinute)", ts: currentMinute * 60 + 30, bpm: Int(avg.rounded())))
+        }
+
+        for sample in samples {
+            let minute = sample.ts / 60
+            if minute != currentMinute {
+                appendCurrentMinute()
+                currentMinute = minute
+                bpmTotal = 0
+                count = 0
+            }
+            bpmTotal += sample.bpm
+            count += 1
+        }
+        appendCurrentMinute()
+        return rows
     }
 
     private func grid(in rect: CGRect) -> Path {
@@ -2884,9 +4049,15 @@ private struct InteractiveHRChart: View {
     }
 
     private var fullDomain: (first: Int, last: Int)? {
-        let ordered = samples.sorted { $0.ts < $1.ts }
-        guard let first = ordered.first?.ts, let last = ordered.last?.ts, last > first else { return nil }
+        guard let first = samples.map(\.ts).min(),
+              let last = samples.map(\.ts).max(),
+              last > first else { return nil }
         return (first, last)
+    }
+
+    private var midpointOfFullDomain: Int {
+        guard let domain = fullDomain else { return 0 }
+        return (domain.first + domain.last) / 2
     }
 
     private func clampedZoom(_ value: CGFloat) -> CGFloat {
@@ -2938,10 +4109,12 @@ private struct HRIntervalLegend: View {
 }
 
 private struct HeartRateDayView: View {
-    @EnvironmentObject private var scanner: IOSWhoopScanner
+    @EnvironmentObject private var scanner: IOSTrackerScanner
+    @EnvironmentObject private var health: IOSHealthStore
     let selectedDate: Date
     let samples: [IOSMetricHRSample]
     let intervals: [HRChartInterval]
+    let deviceSource: IOSDeviceSource
     @State private var isEditingSleep = false
     @State private var sleepDraft: SleepWindowDraft?
     @State private var sleepSaveStatus: String?
@@ -2968,9 +4141,9 @@ private struct HeartRateDayView: View {
                 }
                 HStack(spacing: 10) {
                     ScoreCard(title: "Min", value: samples.map(\.bpm).min().map { "\($0)" } ?? "--", unit: "bpm", color: StrandPalette.accent)
-                    ScoreCard(title: "Daily HRV", value: scanner.metrics.hrvRMSSD.map { "\(Int($0.rounded()))" } ?? "--", unit: "ms", color: StrandPalette.metricPurple)
+                    ScoreCard(title: "Daily HRV", value: dailyHRVText, unit: "ms", color: StrandPalette.metricPurple)
                 }
-                if let restingHR = scanner.metrics.restingHR {
+                if let restingHR {
                     ScoreCard(title: "Resting HR", value: "\(restingHR)", unit: "bpm", color: StrandPalette.metricAmber)
                 }
             }
@@ -3022,7 +4195,7 @@ private struct HeartRateDayView: View {
             }
 
             if isEditingSleep {
-                Text("Drag the cyan sleep box or its start/end handles, then tap Done Editing to recalculate recovery from that saved window.")
+                Text(sleepEditHelpText)
                     .font(.caption)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3065,109 +4238,186 @@ private struct HeartRateDayView: View {
     private func saveSleepWindow() async {
         guard let sleepDraft else { return }
         isSavingSleep = true
-        await scanner.setSleepWindow(start: sleepDraft.start, end: sleepDraft.end, for: selectedDate)
+        switch deviceSource {
+        case .tracker:
+            await scanner.setSleepWindow(start: sleepDraft.start, end: sleepDraft.end, for: selectedDate)
+        case .appleWatch:
+            await health.setSleepWindow(start: sleepDraft.start, end: sleepDraft.end, for: selectedDate)
+        }
         isSavingSleep = false
         isEditingSleep = false
-        sleepSaveStatus = "Sleep window saved. Recovery was recalculated from this window."
+        sleepSaveStatus = deviceSource == .appleWatch
+            ? "Sleep window saved locally. Readiness was recalculated from Apple Health data."
+            : "Sleep window saved. Readiness was recalculated from this window."
     }
 
     private func resetSleepWindow() async {
         isSavingSleep = true
-        await scanner.resetSleepWindow(for: selectedDate)
+        switch deviceSource {
+        case .tracker:
+            await scanner.resetSleepWindow(for: selectedDate)
+        case .appleWatch:
+            await health.resetSleepWindow(for: selectedDate)
+        }
         sleepDraft = currentSleepWindow ?? defaultSleepWindow
         isSavingSleep = false
         isEditingSleep = false
-        sleepSaveStatus = "Manual sleep window cleared. Auto sleep was recalculated once."
+        sleepSaveStatus = deviceSource == .appleWatch
+            ? "Manual sleep window cleared. Apple Health sleep is being used again."
+            : "Manual sleep window cleared. Auto sleep was recalculated once."
+    }
+
+    private var dailyHRVText: String {
+        switch deviceSource {
+        case .tracker:
+            return scanner.metrics.hrvRMSSD.map { "\(Int($0.rounded()))" } ?? "--"
+        case .appleWatch:
+            return health.hrvSDNN.map { "\(Int($0.rounded()))" } ?? "--"
+        }
+    }
+
+    private var restingHR: Int? {
+        switch deviceSource {
+        case .tracker:
+            return scanner.metrics.restingHR
+        case .appleWatch:
+            return health.restingHR
+        }
+    }
+
+    private var sleepEditHelpText: String {
+        switch deviceSource {
+        case .tracker:
+            return "Drag the cyan sleep box or its start/end handles, then tap Done Editing to recalculate readiness from that saved window."
+        case .appleWatch:
+            return "Drag the cyan sleep box or its start/end handles, then tap Done Editing. Apple Health stages inside the window are preserved; added time is treated as unstaged sleep."
+        }
     }
 }
 
 private struct RecoveryExplanationView: View {
-    @EnvironmentObject private var scanner: IOSWhoopScanner
+    @EnvironmentObject private var scanner: IOSTrackerScanner
+    @EnvironmentObject private var health: IOSHealthStore
+    @AppStorage(IOSDeviceSource.storageKey) private var selectedDeviceSource = IOSDeviceSource.tracker.rawValue
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 ExplanationHeader(
-                    title: "Recovery",
-                    value: scanner.metrics.recovery.map { "\(Int($0.rounded()))%" } ?? "--",
-                    color: scanner.metrics.recovery.map(StrandPalette.recoveryColor) ?? StrandPalette.textTertiary
+                    title: "Readiness",
+                    value: recoveryScore.map { "\(Int($0.rounded()))%" } ?? "--",
+                    color: recoveryScore.map(StrandPalette.recoveryColor) ?? StrandPalette.textTertiary
                 )
                 ExplanationBlock(
                     title: "How it is calculated",
-                    text: "Recovery is calculated after your main sleep window from the fitness tracker data collected while you were asleep. WarbFit compares your overnight HRV and resting heart rate with your own rolling baseline, then blends in sleep performance, respiration, recent training load, and unusual raw SpO2 or skin-temperature changes when those signals are available."
+                    text: "Readiness is calculated after your main sleep window from the fitness tracker data collected while you were asleep. WarbFit compares your overnight HRV and resting heart rate with your own rolling baseline, then blends in sleep performance, respiration, recent training load, and unusual raw SpO2 or skin-temperature changes when those signals are available."
                 )
                 ExplanationBlock(
                     title: "Main drivers",
-                    text: "HRV is the strongest driver: higher-than-baseline overnight RMSSD raises recovery. A lower-than-baseline resting heart rate also helps. Sleep performance uses duration, efficiency, and estimated restorative sleep. Respiration is included as a smaller readiness signal. Recent strain uses your logged strain history, and raw SpO2/skin-temp deviations can lower recovery when they look unusual for you."
+                    text: "HRV is the strongest driver: higher-than-baseline overnight RMSSD raises readiness. A lower-than-baseline resting heart rate also helps. Sleep performance uses duration, efficiency, and estimated restorative sleep. Respiration is included as a smaller readiness signal. Recent exertion uses your logged exertion history, and raw SpO2/skin-temp deviations can lower readiness when they look unusual for you."
                 )
                 ExplanationBlock(
                     title: "Score behavior",
                     text: "Each available input is converted into a personal baseline score, then the inputs are combined and mapped onto a 0-100 scale. Missing optional inputs are skipped and the remaining weights are normalized. If your HRV baseline is still too new, WarbFit shows a provisional score based on sleep, recent load, and illness-watch signals until enough nights are collected."
                 )
-                SourceRow(name: "Current inputs", status: scanner.metrics.recoveryStatus, icon: "waveform.path.ecg", color: StrandPalette.metricPurple)
+                SourceRow(name: "Readiness inputs", status: recoveryInputStatus, icon: "waveform.path.ecg", color: StrandPalette.metricPurple)
             }
             .padding(16)
             .padding(.bottom, 96)
         }
-        .navigationTitle("Recovery")
+        .navigationTitle("Readiness")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var recoveryScore: Double? {
+        preferredDeviceSource == .tracker ? scanner.metrics.recovery : health.recoveryScore
+    }
+
+    private var recoveryInputStatus: String {
+        preferredDeviceSource == .tracker
+            ? scanner.metrics.recoveryStatus
+            : health.recoveryStatus
+    }
+
+    private var preferredDeviceSource: IOSDeviceSource {
+        _ = selectedDeviceSource
+        return IOSDeviceSource.sourceForDay(Date())
     }
 }
 
 private struct StrainExplanationView: View {
-    @EnvironmentObject private var scanner: IOSWhoopScanner
+    @EnvironmentObject private var scanner: IOSTrackerScanner
     @EnvironmentObject private var recorder: IOSWorkoutRecorder
     @EnvironmentObject private var health: IOSHealthStore
+    @AppStorage(IOSDeviceSource.storageKey) private var selectedDeviceSource = IOSDeviceSource.tracker.rawValue
 
     var body: some View {
         let rawStrain = effectiveDailyStrain
-        let adjustedLoad = IOSStrainEstimator.recoveryAdjustedLoad(strain: rawStrain, recovery: scanner.metrics.recovery)
+        let adjustedLoad = IOSStrainEstimator.recoveryAdjustedLoad(strain: rawStrain, recovery: effectiveRecoveryScore)
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 ExplanationHeader(
-                    title: "Strain",
+                    title: "Exertion",
                     value: rawStrain.map { String(format: "%.1f /21", $0) } ?? "--",
-                    color: rawStrain == nil ? StrandPalette.textTertiary : StrandPalette.metricCyan
+                    color: rawStrain == nil ? StrandPalette.textTertiary : StrandPalette.metricPurple
                 )
                 ExplanationBlock(
                     title: "What it measures",
-                    text: "Strain estimates cardiovascular load accumulated while you are awake. The daily score starts after your main overnight sleep ends and excludes sleep time. Workout strain uses the same heart-rate-load method, but only over the workout start-to-finish window, so a workout can be viewed on its own while the Today score represents the whole awake day."
+                    text: "Exertion estimates cardiovascular load accumulated while you are awake. The daily score starts after your main overnight sleep ends and excludes sleep time. Workout exertion uses the same heart-rate-load method, but only over the workout start-to-finish window, so a workout can be viewed on its own while the Today score represents the whole awake day."
                 )
                 ExplanationBlock(
                     title: "Heart-rate load",
-                    text: "WarbFit uses two layers for daily strain. First, every awake interval gets a small quiet-awake load based on MET research: being awake costs more energy than sleeping, but far less than moderate exercise. Second, fitness tracker heart-rate data adds extra load when your heart rate rises into the light-intensity heart-rate-reserve range. Higher-intensity time is weighted with Edwards-style heart-rate-zone TRIMP, while lower activity uses a Banister-style continuous TRIMP curve."
+                    text: "WarbFit uses two layers for daily exertion. First, every awake interval gets a small quiet-awake load based on MET research: being awake costs more energy than sleeping, but far less than moderate exercise. Second, fitness tracker heart-rate data adds extra load when your heart rate rises into the light-intensity heart-rate-reserve range. Higher-intensity time is weighted with Edwards-style heart-rate-zone TRIMP, while lower activity uses a Banister-style continuous TRIMP curve."
                 )
                 ExplanationBlock(
                     title: "0-21 score",
-                    text: "After the app sums quiet-awake load and HR-derived TRIMP load across the day, it maps that total onto a 0-21 logarithmic strain scale. A quiet awake day should slowly accumulate low strain, while walks and workouts add noticeably more because their HR load is layered on top."
+                    text: "After the app sums quiet-awake load and HR-derived TRIMP load across the day, it maps that total onto a 0-21 logarithmic exertion scale. A quiet awake day should slowly accumulate low exertion, while walks and workouts add noticeably more because their HR load is layered on top."
                 )
                 ExplanationBlock(
                     title: "Adjusted load",
-                    text: "Raw strain stays blue and always represents the actual HR-load score. The purple adjusted-load number estimates how costly that same strain is today after considering recovery. When recovery is high, adjusted load stays close to raw strain. When recovery is low, the app treats your available capacity as lower, so the same workout or daily load is shown as more expensive."
+                    text: "Raw exertion stays purple and always represents the actual HR-load score. The magenta adjusted-load number estimates how costly that same exertion is today after considering readiness. When readiness is high, adjusted load stays close to raw exertion. When readiness is low, the app treats your available capacity as lower, so the same workout or daily load is shown as more expensive."
                 )
                 HStack(spacing: 10) {
-                    ScoreCard(title: "Raw", value: rawStrain.map { String(format: "%.1f", $0) } ?? "--", unit: "/21", color: StrandPalette.metricCyan)
-                    ScoreCard(title: "Adj Load", value: adjustedLoad.map { String(format: "%.1f", $0) } ?? "--", unit: "/21", color: StrandPalette.metricPurple)
+                    ScoreCard(title: "Raw", value: rawStrain.map { String(format: "%.1f", $0) } ?? "--", unit: "/21", color: StrandPalette.metricPurple)
+                    ScoreCard(title: "Adj Load", value: adjustedLoad.map { String(format: "%.1f", $0) } ?? "--", unit: "/21", color: StrandPalette.strain100)
                 }
             }
             .padding(16)
             .padding(.bottom, 96)
         }
-        .navigationTitle("Strain")
+        .navigationTitle("Exertion")
         .navigationBarTitleDisplayMode(.inline)
     }
 
     private var workoutsForToday: [IOSLoggedWorkout] {
-        recorder.workouts.filter { Calendar.current.isDateInToday($0.startedAt) }
+        recorder.workouts.filter {
+            Calendar.current.isDateInToday($0.startedAt) &&
+                warbFitLoggedWorkout($0, belongsTo: detectedDeviceSource)
+        }
     }
 
     private var effectiveDailyStrain: Double? {
+        if detectedDeviceSource == .appleWatch {
+            let computed = IOSStrainEstimator.awakeDayStrain(
+                metricSamples: awakeDayHRSamples,
+                maxHR: IOSUserBodyProfile.current.estimatedMaxHR,
+                restingHR: health.exertionRestingHR,
+                physiologySex: IOSUserBodyProfile.current.physiologySex.analyticsValue
+            )
+            let bestWorkout = workoutsForToday.compactMap(\.effectiveStrain).max()
+            let allDayHealthStrain = sourceAtStartOfToday == .appleWatch ? health.dailyStrain : nil
+            return [computed, allDayHealthStrain, bestWorkout]
+                .compactMap { $0 }
+                .max()
+        }
         let computed = IOSStrainEstimator.awakeDayStrain(
             metricSamples: awakeDayHRSamples,
-            restingHR: scanner.metrics.restingHR.map(Double.init)
+            maxHR: IOSUserBodyProfile.current.estimatedMaxHR,
+            restingHR: scanner.metrics.exertionRestingHR,
+            physiologySex: IOSUserBodyProfile.current.physiologySex.analyticsValue
         )
         let bestWorkout = workoutsForToday.compactMap(\.effectiveStrain).max()
-        return [computed, scanner.metrics.strain, bestWorkout]
+        return [computed, detectedDeviceSource == .tracker ? scanner.metrics.strain : nil, bestWorkout]
             .compactMap { $0 }
             .max()
     }
@@ -3175,7 +4425,8 @@ private struct StrainExplanationView: View {
     private var awakeDayHRSamples: [IOSMetricHRSample] {
         let sleepIntervals = WarbFitSleepDisplay.intervals(
             health: health.sleepIntervals,
-            whoop: scanner.metrics.whoopSleepIntervals
+            tracker: scanner.metrics.trackerSleepIntervals,
+            source: detectedDeviceSource
         )
         let selectedDayStart = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
         let morningCutoff = selectedDayStart + 14 * 3600
@@ -3197,7 +4448,9 @@ private struct StrainExplanationView: View {
                 byTs[sample.ts] = sample.bpm
             }
         }
-        if let active = recorder.active, Calendar.current.isDateInToday(active.startedAt) {
+        if let active = recorder.active,
+           Calendar.current.isDateInToday(active.startedAt),
+           warbFitActiveWorkout(active, belongsTo: detectedDeviceSource) {
             for sample in active.hrSamples where sample.ts >= startTs {
                 byTs[sample.ts] = sample.bpm
             }
@@ -3208,7 +4461,34 @@ private struct StrainExplanationView: View {
     }
 
     private var dailyCalculationSamples: [IOSMetricHRSample] {
-        scanner.metrics.dailyHRSamples.isEmpty ? scanner.metrics.todayHRSamples : scanner.metrics.dailyHRSamples
+        switch detectedDeviceSource {
+        case .tracker:
+            let samples = scanner.metrics.dailyHRSamples.isEmpty ? scanner.metrics.todayHRSamples : scanner.metrics.dailyHRSamples
+            return warbFitMetricSamples(samples, for: .tracker)
+        case .appleWatch:
+            return warbFitMetricSamples(health.dailyHRSamples, for: .appleWatch)
+        }
+    }
+
+    private var effectiveRecoveryScore: Double? {
+        detectedDeviceSource == .tracker ? scanner.metrics.recovery : health.recoveryScore
+    }
+
+    private var detectedDeviceSource: IOSDeviceSource {
+        warbFitDetectedDeviceSource(
+            scanner: scanner,
+            health: health,
+            preferredSource: preferredDeviceSource
+        )
+    }
+
+    private var preferredDeviceSource: IOSDeviceSource {
+        _ = selectedDeviceSource
+        return IOSDeviceSource.sourceForDay(Date())
+    }
+
+    private var sourceAtStartOfToday: IOSDeviceSource {
+        IOSDeviceSource.source(for: Calendar.current.startOfDay(for: Date()))
     }
 }
 
@@ -3255,7 +4535,8 @@ private struct ExplanationBlock: View {
 
 private struct SleepDetailView: View {
     @EnvironmentObject private var health: IOSHealthStore
-    @EnvironmentObject private var scanner: IOSWhoopScanner
+    @EnvironmentObject private var scanner: IOSTrackerScanner
+    @AppStorage(IOSDeviceSource.storageKey) private var selectedDeviceSource = IOSDeviceSource.tracker.rawValue
 
     var body: some View {
         ScrollView {
@@ -3270,9 +4551,11 @@ private struct SleepDetailView: View {
                 }
                 HStack(spacing: 10) {
                     ScoreCard(title: "Asleep", value: String(format: "%.1f", effectiveSleepHours), unit: "h", color: StrandPalette.metricCyan)
-                    ScoreCard(title: "Efficiency", value: "\(Int((effectiveSleepEfficiency * 100).rounded()))", unit: "%", color: StrandPalette.recoveryColor(effectiveSleepEfficiency * 100))
+                    if effectiveSleepEfficiency > 0 {
+                        ScoreCard(title: "Efficiency", value: "\(Int((effectiveSleepEfficiency * 100).rounded()))", unit: "%", color: StrandPalette.recoveryColor(effectiveSleepEfficiency * 100))
+                    }
                 }
-                ScoreCard(title: "Sleep HRV", value: scanner.metrics.sleepHRVRMSSD.map { "\(Int($0.rounded()))" } ?? "--", unit: "ms", color: StrandPalette.metricPurple)
+                ScoreCard(title: "Sleep HRV", value: sleepHRVText, unit: "ms", color: StrandPalette.metricPurple)
                 ForEach(effectiveSleepStages) { stage in
                     SourceRow(name: stage.name, status: String(format: "%.1f hours", stage.hours), icon: "moon.stars.fill", color: sleepStageColor(stage.name))
                 }
@@ -3297,35 +4580,61 @@ private struct SleepDetailView: View {
     private var effectiveSleepHours: Double {
         WarbFitSleepDisplay.hours(
             healthHours: health.sleepHours,
-            whoopHours: scanner.metrics.whoopSleepHours,
+            trackerHours: scanner.metrics.trackerSleepHours,
             healthIntervals: health.sleepIntervals,
-            whoopIntervals: scanner.metrics.whoopSleepIntervals
+            trackerIntervals: scanner.metrics.trackerSleepIntervals,
+            source: detectedDeviceSource
         )
     }
 
     private var effectiveSleepEfficiency: Double {
         WarbFitSleepDisplay.efficiency(
             healthEfficiency: health.sleepEfficiency,
-            whoopEfficiency: scanner.metrics.whoopSleepEfficiency,
+            trackerEfficiency: scanner.metrics.trackerSleepEfficiency,
             healthIntervals: health.sleepIntervals,
-            whoopIntervals: scanner.metrics.whoopSleepIntervals
+            trackerIntervals: scanner.metrics.trackerSleepIntervals,
+            source: detectedDeviceSource
         )
     }
 
     private var effectiveSleepStages: [IOSSleepStageSummary] {
         WarbFitSleepDisplay.stages(
             health: health.sleepStages,
-            whoop: scanner.metrics.whoopSleepStages,
+            tracker: scanner.metrics.trackerSleepStages,
             healthIntervals: health.sleepIntervals,
-            whoopIntervals: scanner.metrics.whoopSleepIntervals
+            trackerIntervals: scanner.metrics.trackerSleepIntervals,
+            source: detectedDeviceSource
         )
     }
 
     private var effectiveSleepIntervals: [IOSSleepInterval] {
         WarbFitSleepDisplay.intervals(
             health: health.sleepIntervals,
-            whoop: scanner.metrics.whoopSleepIntervals
+            tracker: scanner.metrics.trackerSleepIntervals,
+            source: detectedDeviceSource
         )
+    }
+
+    private var sleepHRVText: String {
+        switch detectedDeviceSource {
+        case .tracker:
+            return scanner.metrics.sleepHRVRMSSD.map { "\(Int($0.rounded()))" } ?? "--"
+        case .appleWatch:
+            return health.hrvSDNN.map { "\(Int($0.rounded()))" } ?? "--"
+        }
+    }
+
+    private var detectedDeviceSource: IOSDeviceSource {
+        warbFitDetectedDeviceSource(
+            scanner: scanner,
+            health: health,
+            preferredSource: preferredDeviceSource
+        )
+    }
+
+    private var preferredDeviceSource: IOSDeviceSource {
+        _ = selectedDeviceSource
+        return IOSDeviceSource.sourceForDay(Date())
     }
 }
 
@@ -3375,8 +4684,8 @@ private struct SleepStageTimeline: View {
     }
 
     private func stageRows(size: CGSize) -> some View {
-        let stages = ["Awake", "REM", "Core", "Deep"]
-        let laneHeight = max(16, (size.height - 34) / 4.0)
+        let stages = ["Awake", "REM", "Core", "Deep", "Unstaged"]
+        let laneHeight = max(13, (size.height - 34) / CGFloat(stages.count))
         return ZStack(alignment: .leading) {
             ForEach(Array(stages.enumerated()), id: \.element) { index, stage in
                 let y = 10 + CGFloat(index) * laneHeight
@@ -3403,7 +4712,7 @@ private struct SleepStageTimeline: View {
         let x = leftPad + interval.start.timeIntervalSince(range.start) / total * plotWidth
         let width = max(3, interval.end.timeIntervalSince(interval.start) / total * plotWidth)
         let lane = laneIndex(interval.stage)
-        let laneHeight = max(16, (size.height - 34) / 4.0)
+        let laneHeight = max(13, (size.height - 34) / 5.0)
         let y = 10 + CGFloat(lane) * laneHeight
         return RoundedRectangle(cornerRadius: 5)
             .fill(sleepStageColor(interval.stage))
@@ -3454,7 +4763,8 @@ private struct SleepStageTimeline: View {
         case "Awake": return 0
         case "REM": return 1
         case "Core": return 2
-        default: return 3
+        case "Deep": return 3
+        default: return 4
         }
     }
 

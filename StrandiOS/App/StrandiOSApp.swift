@@ -2,10 +2,11 @@ import SwiftUI
 
 @main
 struct StrandiOSApp: App {
-    @StateObject private var scanner = IOSWhoopScanner()
+    @StateObject private var scanner = IOSTrackerScanner()
     @StateObject private var health = IOSHealthStore()
     @StateObject private var workoutRecorder = IOSWorkoutRecorder()
     @StateObject private var pedometer = IOSPedometerStore()
+    @StateObject private var watchWorkoutBridge = IOSWatchWorkoutBridge()
 
     var body: some Scene {
         WindowGroup {
@@ -14,6 +15,7 @@ struct StrandiOSApp: App {
                 .environmentObject(health)
                 .environmentObject(workoutRecorder)
                 .environmentObject(pedometer)
+                .environmentObject(watchWorkoutBridge)
                 .preferredColorScheme(.dark)
         }
     }

@@ -83,7 +83,7 @@ private fun hrFraction(hr: Int?): Double {
     return (hr.toDouble() / HR_MAX_DEFAULT).coerceIn(0.0, 1.0)
 }
 
-/** Current zone 1..5 from %HR-max (WHOOP/Karvonen-style bands: 50/60/70/80/90). */
+/** Current zone 1..5 from %HR-max (TRACKER/Karvonen-style bands: 50/60/70/80/90). */
 private fun hrZone(fraction: Double): Int = when {
     fraction < 0.60 -> 1
     fraction < 0.70 -> 2

@@ -1,6 +1,6 @@
 import Foundation
-import WhoopProtocol
-import WhoopStore
+import TrackerProtocol
+import TrackerStore
 
 enum IOSClockCorrelation {
     static func clockRef(from parsed: ParsedFrame, wall: Int) -> ClockRef? {

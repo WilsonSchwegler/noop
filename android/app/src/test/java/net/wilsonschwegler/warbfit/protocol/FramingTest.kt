@@ -50,7 +50,7 @@ class FramingTest {
     @Test
     fun buildCommand_parsesBackAsValidCommandResponseSibling() {
         // Building a COMMAND frame and re-validating its CRCs proves the envelope is self-consistent:
-        // crc8(length) and crc32(inner) both verify when parsed by a generic Whoop4 validation.
+        // crc8(length) and crc32(inner) both verify when parsed by a generic Tracker4 validation.
         val frame = Framing.buildCommand(CommandNumber.GET_BATTERY_LEVEL, byteArrayOf(0), seq = 0)
         // Manually re-check CRC8 over the two length bytes.
         val wantCrc8 = Crc.crc8(byteArrayOf(frame[1], frame[2]))
@@ -66,18 +66,18 @@ class FramingTest {
         assertEquals(wantCrc32, gotCrc32)
     }
 
-    // MARK: - puffinCommandFrame (EXPERIMENTAL WHOOP 5.0/MG)
+    // MARK: - puffinCommandFrame (EXPERIMENTAL TRACKER 5.0/MG)
 
     @Test
-    fun puffinCommandFrame_roundTripsThroughWhoop5Parse() {
+    fun puffinCommandFrame_roundTripsThroughTracker5Parse() {
         // EXPERIMENTAL: a puffin TOGGLE_REALTIME_HR(3) probe, payload [1], seq 7. The CRC16 header +
-        // CRC32 payload must both verify when parsed as a WHOOP5 frame (parseWhoop5 reports crcOk).
+        // CRC32 payload must both verify when parsed as a TRACKER5 frame (parseTracker5 reports crcOk).
         val frame = Framing.puffinCommandFrame(
             cmd = CommandNumber.TOGGLE_REALTIME_HR.rawValue,
             seq = 7,
             payload = byteArrayOf(1),
         )
-        val r = Framing.parseFrame(frame, DeviceFamily.WHOOP5)
+        val r = Framing.parseFrame(frame, DeviceFamily.TRACKER5)
         assertTrue(r.ok)
         assertEquals(true, r.crcOk)
         // Inner record starts at offset 8: [type=35][seq=7][cmd=3][payload=1].

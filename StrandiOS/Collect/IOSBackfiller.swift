@@ -1,6 +1,6 @@
 import Foundation
-import WhoopProtocol
-import WhoopStore
+import TrackerProtocol
+import TrackerStore
 
 protocol IOSBackfillStoreWriting: AnyObject {
     @discardableResult
@@ -12,7 +12,7 @@ protocol IOSBackfillStoreWriting: AnyObject {
     func cursor(_ name: String) async throws -> Int?
 }
 
-extension WhoopStore: IOSBackfillStoreWriting {}
+extension TrackerStore: IOSBackfillStoreWriting {}
 
 @MainActor
 final class IOSBackfiller {

@@ -19,7 +19,7 @@ data class RrInterval(val ts: Int, val rrMs: Int)
  * event label (e.g. "BATTERY_LEVEL(3)", "WRIST_OFF(10)"); [payload] carries any extra decoded
  * fields with `event`/`event_timestamp` removed.
  */
-data class WhoopEvent(val ts: Int, val kind: String, val payload: Map<String, Any?>)
+data class TrackerEvent(val ts: Int, val kind: String, val payload: Map<String, Any?>)
 
 /**
  * A battery reading. [ts] is event RTC for BATTERY_LEVEL events, else the wall-clock reference.
@@ -37,7 +37,7 @@ data class BatterySample(
 data class Streams(
     val hr: MutableList<HrSample> = mutableListOf(),
     val rr: MutableList<RrInterval> = mutableListOf(),
-    val events: MutableList<WhoopEvent> = mutableListOf(),
+    val events: MutableList<TrackerEvent> = mutableListOf(),
     val battery: MutableList<BatterySample> = mutableListOf(),
 ) {
     companion object {
@@ -87,7 +87,7 @@ fun extractStreams(parsed: List<ParsedFrame>, deviceClockRef: Int, wallClockRef:
                 val payload = p.toMutableMap()
                 payload.remove("event")
                 payload.remove("event_timestamp")
-                out.events.add(WhoopEvent(ts, kind, payload))
+                out.events.add(TrackerEvent(ts, kind, payload))
             }
 
             "COMMAND_RESPONSE" -> {

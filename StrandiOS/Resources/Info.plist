@@ -20,14 +20,14 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>WarbFit connects directly to your fitness tracker strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your iPhone. Nothing leaves your device.</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>WarbFit reads Apple Health sleep analysis on-device to calculate a sleep score. Recovery, strain, activity, workouts, HRV, and resting heart rate come from your fitness tracker strap.</string>
-	<key>NSHealthUpdateUsageDescription</key>
-	<string>WarbFit can export fitness tracker heart rate, HRV, detected sleep stages, workouts, and active energy to Apple Health when you explicitly request it.</string>
+	<string>When the companion app is selected, WarbFit reads Apple Health sleep, workouts, heart rate, HRV, resting heart rate, activity, and vitals on-device to display health-derived trends and calculate WarbFit exertion and readiness.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>WarbFit uses your location during outdoor runs and hikes to record your route, distance, and pace.</string>
 	<key>NSMotionUsageDescription</key>

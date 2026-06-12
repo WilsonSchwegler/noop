@@ -3,7 +3,7 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
-      WarbFit is an OFFLINE WHOOP companion. It talks to the strap over BLE and stores
+      WarbFit is an OFFLINE TRACKER companion. It talks to the strap over BLE and stores
       everything locally (Room). The ONLY outbound network is the opt-in AI Coach
       (bring-your-own OpenAI/Anthropic key) — nothing is sent unless the user adds a
       key and asks a question. Hence the single INTERNET permission below.
@@ -64,9 +64,9 @@
     <!-- Resolve the Health Connect provider on Android 14+ (platform) and earlier (app). -->
     <queries>
         <package android:name="com.google.android.apps.healthdata" />
-        <!-- So the connection helper can detect the official WHOOP app and deep-link to its
+        <!-- So the connection helper can detect the official TRACKER app and deep-link to its
              info screen (a strap only pairs with one app at a time). Android 11+ visibility. -->
-        <package android:name="com.whoop.android" />
+        <package android:name="com.tracker.android" />
     </queries>
 
     <application

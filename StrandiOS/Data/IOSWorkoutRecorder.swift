@@ -1,7 +1,7 @@
 import CoreLocation
 import Foundation
 import StrandAnalytics
-import WhoopProtocol
+import TrackerProtocol
 
 struct IOSWorkoutType: Identifiable, Equatable {
     let id: String
@@ -123,6 +123,12 @@ struct IOSRoutePoint: Identifiable, Codable, Equatable {
     }
 }
 
+enum IOSLoggedWorkoutSource: String, Codable, Equatable {
+    case phone
+    case companion
+    case appleHealth
+}
+
 struct IOSLoggedWorkout: Identifiable, Codable, Equatable {
     let id: UUID
     let typeId: String
@@ -140,6 +146,7 @@ struct IOSLoggedWorkout: Identifiable, Codable, Equatable {
     let distanceMeters: Double?
     let treadmillDistance: String?
     let stairFlights: String?
+    let source: IOSLoggedWorkoutSource
 
     init(id: UUID,
          typeId: String,
@@ -156,7 +163,8 @@ struct IOSLoggedWorkout: Identifiable, Codable, Equatable {
          routePoints: [IOSRoutePoint] = [],
          distanceMeters: Double? = nil,
          treadmillDistance: String? = nil,
-         stairFlights: String? = nil) {
+         stairFlights: String? = nil,
+         source: IOSLoggedWorkoutSource = .phone) {
         self.id = id
         self.typeId = typeId
         self.typeName = typeName
@@ -173,12 +181,14 @@ struct IOSLoggedWorkout: Identifiable, Codable, Equatable {
         self.distanceMeters = distanceMeters
         self.treadmillDistance = treadmillDistance
         self.stairFlights = stairFlights
+        self.source = source
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, typeId, typeName, startedAt, endedAt, notes, hrSamples, strain
         case planId, planName, planSnapshot, strengthSetLogs
         case routePoints, distanceMeters, treadmillDistance, stairFlights
+        case source
     }
 
     init(from decoder: Decoder) throws {
@@ -199,6 +209,7 @@ struct IOSLoggedWorkout: Identifiable, Codable, Equatable {
         distanceMeters = try c.decodeIfPresent(Double.self, forKey: .distanceMeters)
         treadmillDistance = try c.decodeIfPresent(String.self, forKey: .treadmillDistance)
         stairFlights = try c.decodeIfPresent(String.self, forKey: .stairFlights)
+        source = try c.decodeIfPresent(IOSLoggedWorkoutSource.self, forKey: .source) ?? .phone
     }
 
     var durationSeconds: TimeInterval { endedAt.timeIntervalSince(startedAt) }
@@ -214,17 +225,33 @@ struct IOSLoggedWorkout: Identifiable, Codable, Equatable {
         return durationSeconds / miles
     }
     var effectiveStrain: Double? {
-        strain ?? IOSStrainEstimator.strain(
+        let profile = IOSUserBodyProfile.current
+        let exertionSource: IOSDeviceSource = {
+            switch source {
+            case .appleHealth, .companion: return .appleWatch
+            case .phone: return IOSDeviceSource.current()
+            }
+        }()
+        return strain ?? IOSStrainEstimator.strain(
             hr: hrSamples.map { HRSample(ts: $0.ts, bpm: $0.bpm) },
-            workoutTypeId: typeId
+            workoutTypeId: typeId,
+            maxHR: profile.estimatedMaxHR,
+            restingHR: IOSStrainEstimator.cachedExertionRestingHR(for: exertionSource),
+            physiologySex: profile.physiologySex.analyticsValue
         )
     }
+}
+
+enum IOSActiveWorkoutSource: Equatable {
+    case phone
+    case companion
 }
 
 struct IOSActiveWorkout: Equatable {
     let id: UUID
     let type: IOSWorkoutType
     let startedAt: Date
+    var source: IOSActiveWorkoutSource
     var notes: String
     var hrSamples: [IOSWorkoutHRSample]
     var plan: IOSWorkoutPlan?
@@ -271,11 +298,16 @@ final class IOSWorkoutRecorder: NSObject, ObservableObject {
         loadPlans()
     }
 
-    func start(_ type: IOSWorkoutType, plan: IOSWorkoutPlan? = nil) {
+    func start(_ type: IOSWorkoutType,
+               plan: IOSWorkoutPlan? = nil,
+               id: UUID = UUID(),
+               startedAt: Date = Date(),
+               source: IOSActiveWorkoutSource = .phone) {
         active = IOSActiveWorkout(
-            id: UUID(),
+            id: id,
             type: type,
-            startedAt: Date(),
+            startedAt: startedAt,
+            source: source,
             notes: "",
             hrSamples: [],
             plan: plan,
@@ -285,7 +317,7 @@ final class IOSWorkoutRecorder: NSObject, ObservableObject {
             treadmillDistance: "",
             stairFlights: ""
         )
-        if type.id == "run" || type.id == "hiking" {
+        if source == .phone && (type.id == "run" || type.id == "hiking") {
             startLocationUpdates()
         }
     }
@@ -323,14 +355,14 @@ final class IOSWorkoutRecorder: NSObject, ObservableObject {
         self.active = active
     }
 
-    func finish() {
+    func finish(at endedAt: Date = Date()) {
         guard let active else { return }
         let logged = IOSLoggedWorkout(
             id: active.id,
             typeId: active.type.id,
             typeName: active.type.name,
             startedAt: active.startedAt,
-            endedAt: Date(),
+            endedAt: endedAt,
             notes: active.notes.trimmingCharacters(in: .whitespacesAndNewlines),
             hrSamples: active.hrSamples,
             strain: strain(for: active.hrSamples, workoutTypeId: active.type.id),
@@ -341,7 +373,8 @@ final class IOSWorkoutRecorder: NSObject, ObservableObject {
             routePoints: active.routePoints,
             distanceMeters: active.distanceMeters > 0 ? active.distanceMeters : nil,
             treadmillDistance: active.treadmillDistance.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
-            stairFlights: active.stairFlights.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            stairFlights: active.stairFlights.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            source: active.source == .companion ? .companion : .phone
         )
         workouts.insert(logged, at: 0)
         workouts = Array(workouts.prefix(50))
@@ -358,6 +391,88 @@ final class IOSWorkoutRecorder: NSObject, ObservableObject {
     func delete(_ workout: IOSLoggedWorkout) {
         workouts.removeAll { $0.id == workout.id }
         save()
+    }
+
+    func plan(id: UUID?) -> IOSWorkoutPlan? {
+        guard let id else { return nil }
+        return plans.first { $0.id == id }
+    }
+
+    func syncCompanionWorkout(_ snapshot: IOSWatchWorkoutSnapshot,
+                              hrSamples: [IOSWorkoutHRSample]) {
+        guard snapshot.isRunning, let startedAt = snapshot.startedAt else { return }
+        let sessionId = UUID(uuidString: snapshot.workoutId) ?? UUID()
+        let type = Self.workoutType(id: snapshot.workoutTypeId, fallbackName: snapshot.workoutName)
+        if active?.id != sessionId {
+            start(
+                type,
+                plan: plan(id: snapshot.planId),
+                id: sessionId,
+                startedAt: startedAt,
+                source: .companion
+            )
+        }
+        guard var active else { return }
+        active.source = .companion
+        active.hrSamples = Self.mergedHeartRateSamples(active.hrSamples, hrSamples)
+        if snapshot.workoutTypeId == "treadmill" {
+            active.distanceMeters = snapshot.distanceMeters
+            active.treadmillDistance = snapshot.treadmillDistance
+        } else {
+            active.distanceMeters = max(active.distanceMeters, snapshot.distanceMeters)
+        }
+        if snapshot.workoutTypeId == "stairmaster" {
+            active.stairFlights = snapshot.stairFlights
+        }
+        active.routePoints = Self.mergedRoutePoints(active.routePoints, snapshot.routePoints)
+        if active.plan == nil, let plan = plan(id: snapshot.planId) {
+            active.plan = plan
+            active.strengthSetLogs = Self.initialSetLogs(for: plan)
+        }
+        if !snapshot.strengthSetLogs.isEmpty {
+            active.strengthSetLogs = Self.mergedStrengthSetLogs(
+                current: active.strengthSetLogs,
+                incoming: snapshot.strengthSetLogs
+            )
+        }
+        self.active = active
+    }
+
+    func finishCompanionWorkout(_ snapshot: IOSWatchWorkoutSnapshot,
+                                hrSamples: [IOSWorkoutHRSample]) {
+        if snapshot.startedAt != nil {
+            var runningSnapshot = snapshot
+            runningSnapshot.isRunning = true
+            syncCompanionWorkout(runningSnapshot, hrSamples: hrSamples)
+        }
+        guard let active,
+              active.id.uuidString == snapshot.workoutId else { return }
+        finish(at: snapshot.updatedAt)
+    }
+
+    @discardableResult
+    func importHealthWorkouts(_ imported: [IOSLoggedWorkout]) -> Int {
+        guard !imported.isEmpty else { return 0 }
+        var importedCount = 0
+        var changed = false
+        for workout in imported {
+            if let index = workouts.firstIndex(where: { Self.isDuplicateHealthWorkout(workout, existing: $0) }) {
+                let merged = Self.mergedExistingWorkout(workouts[index], withHealthWorkout: workout)
+                if merged != workouts[index] {
+                    workouts[index] = merged
+                    changed = true
+                }
+            } else {
+                workouts.append(workout)
+                importedCount += 1
+                changed = true
+            }
+        }
+        guard changed else { return 0 }
+        workouts = workouts.sorted { $0.startedAt > $1.startedAt }
+        workouts = Array(workouts.prefix(50))
+        save()
+        return importedCount
     }
 
     func addPlan(_ plan: IOSWorkoutPlan) {
@@ -417,8 +532,7 @@ final class IOSWorkoutRecorder: NSObject, ObservableObject {
     }
 
     func strain(for samples: [IOSWorkoutHRSample], workoutTypeId: String? = nil) -> Double? {
-        let hr = samples.map { HRSample(ts: $0.ts, bpm: $0.bpm) }
-        return IOSStrainEstimator.strain(hr: hr, workoutTypeId: workoutTypeId)
+        Self.estimatedStrain(for: samples, workoutTypeId: workoutTypeId)
     }
 
     func elapsedString(for seconds: TimeInterval) -> String {
@@ -459,6 +573,133 @@ final class IOSWorkoutRecorder: NSObject, ObservableObject {
         } ?? []
     }
 
+    private static func workoutType(id: String, fallbackName: String) -> IOSWorkoutType {
+        if let known = IOSWorkoutType.all.first(where: { $0.id == id }) {
+            return known
+        }
+        return IOSWorkoutType(id: id, name: fallbackName, icon: "figure.mixed.cardio")
+    }
+
+    private static func estimatedStrain(for samples: [IOSWorkoutHRSample], workoutTypeId: String? = nil) -> Double? {
+        let hr = samples.map { HRSample(ts: $0.ts, bpm: $0.bpm) }
+        let profile = IOSUserBodyProfile.current
+        return IOSStrainEstimator.strain(
+            hr: hr,
+            workoutTypeId: workoutTypeId,
+            maxHR: profile.estimatedMaxHR,
+            restingHR: IOSStrainEstimator.cachedExertionRestingHR(for: IOSDeviceSource.current()),
+            physiologySex: profile.physiologySex.analyticsValue
+        )
+    }
+
+    private static func mergedHeartRateSamples(_ existing: [IOSWorkoutHRSample],
+                                               _ incoming: [IOSWorkoutHRSample]) -> [IOSWorkoutHRSample] {
+        var byTs: [Int: IOSWorkoutHRSample] = [:]
+        for sample in existing {
+            byTs[sample.ts] = sample
+        }
+        for sample in incoming {
+            byTs[sample.ts] = sample
+        }
+        return byTs.keys.sorted().compactMap { byTs[$0] }
+    }
+
+    private static func mergedRoutePoints(_ existing: [IOSRoutePoint],
+                                          _ incoming: [IOSRoutePoint]) -> [IOSRoutePoint] {
+        guard !incoming.isEmpty else { return existing }
+        var byKey: [String: IOSRoutePoint] = [:]
+        for point in existing + incoming {
+            let key = "\(point.ts)-\(String(format: "%.5f", point.latitude))-\(String(format: "%.5f", point.longitude))"
+            byKey[key] = point
+        }
+        let merged = byKey.values.sorted { $0.ts < $1.ts }
+        return simplifiedRoute(merged, maxPoints: 500)
+    }
+
+    private static func simplifiedRoute(_ points: [IOSRoutePoint], maxPoints: Int) -> [IOSRoutePoint] {
+        guard points.count > maxPoints, maxPoints > 1 else { return points }
+        let stride = max(1, points.count / maxPoints)
+        var reduced = points.enumerated().compactMap { index, point in
+            index.isMultiple(of: stride) ? point : nil
+        }
+        if reduced.last != points.last, let last = points.last {
+            reduced.append(last)
+        }
+        return reduced
+    }
+
+    private static func isDuplicateHealthWorkout(_ healthWorkout: IOSLoggedWorkout,
+                                                 existing: IOSLoggedWorkout) -> Bool {
+        if healthWorkout.id == existing.id { return true }
+        guard healthWorkout.source == .appleHealth else { return false }
+        guard workoutTypesOverlap(healthWorkout.typeId, existing.typeId) else { return false }
+        let startDelta = abs(healthWorkout.startedAt.timeIntervalSince(existing.startedAt))
+        let endDelta = abs(healthWorkout.endedAt.timeIntervalSince(existing.endedAt))
+        let overlap = min(healthWorkout.endedAt, existing.endedAt).timeIntervalSince(max(healthWorkout.startedAt, existing.startedAt))
+        let shorterDuration = min(healthWorkout.durationSeconds, existing.durationSeconds)
+        return startDelta <= 180 ||
+            endDelta <= 180 ||
+            overlap >= max(60, shorterDuration * 0.8)
+    }
+
+    private static func workoutTypesOverlap(_ lhs: String, _ rhs: String) -> Bool {
+        if lhs == rhs { return true }
+        let runningFamily: Set<String> = ["run", "treadmill", "walking"]
+        return runningFamily.contains(lhs) && runningFamily.contains(rhs)
+    }
+
+    private static func mergedExistingWorkout(_ existing: IOSLoggedWorkout,
+                                              withHealthWorkout healthWorkout: IOSLoggedWorkout) -> IOSLoggedWorkout {
+        let mergedHRSamples = existing.hrSamples.isEmpty
+            ? healthWorkout.hrSamples
+            : mergedHeartRateSamples(existing.hrSamples, healthWorkout.hrSamples)
+        let mergedStrain = estimatedStrain(for: mergedHRSamples, workoutTypeId: existing.typeId)
+            ?? existing.strain
+            ?? healthWorkout.strain
+        return IOSLoggedWorkout(
+            id: existing.id,
+            typeId: existing.typeId,
+            typeName: existing.typeName,
+            startedAt: existing.startedAt,
+            endedAt: existing.endedAt,
+            notes: existing.notes,
+            hrSamples: mergedHRSamples,
+            strain: mergedStrain,
+            planId: existing.planId,
+            planName: existing.planName,
+            planSnapshot: existing.planSnapshot,
+            strengthSetLogs: existing.strengthSetLogs,
+            routePoints: mergedRoutePoints(existing.routePoints, healthWorkout.routePoints),
+            distanceMeters: existing.distanceMeters ?? healthWorkout.distanceMeters,
+            treadmillDistance: existing.treadmillDistance ?? healthWorkout.treadmillDistance,
+            stairFlights: existing.stairFlights ?? healthWorkout.stairFlights,
+            source: existing.source
+        )
+    }
+
+    private static func mergedStrengthSetLogs(current: [IOSStrengthSetLog],
+                                              incoming: [IOSStrengthSetLog]) -> [IOSStrengthSetLog] {
+        guard !current.isEmpty else { return incoming }
+        var logs = current
+        for incomingLog in incoming {
+            guard let index = logs.firstIndex(where: {
+                $0.exerciseId == incomingLog.exerciseId && $0.setIndex == incomingLog.setIndex
+            }) else {
+                logs.append(incomingLog)
+                continue
+            }
+            let incomingWeight = incomingLog.weight.trimmingCharacters(in: .whitespacesAndNewlines)
+            let currentWeight = logs[index].weight.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !incomingWeight.isEmpty || currentWeight.isEmpty {
+                logs[index].weight = incomingLog.weight
+            }
+        }
+        return logs.sorted {
+            if $0.exerciseId == $1.exerciseId { return $0.setIndex < $1.setIndex }
+            return $0.exerciseId.uuidString < $1.exerciseId.uuidString
+        }
+    }
+
     private func startLocationUpdates() {
         guard active?.type.id == "run" || active?.type.id == "hiking" else {
             stopLocationUpdates()
@@ -489,7 +730,9 @@ final class IOSWorkoutRecorder: NSObject, ObservableObject {
     }
 
     private func appendRouteLocation(_ location: CLLocation) {
-        guard var active, active.type.id == "run" || active.type.id == "hiking" else { return }
+        guard var active,
+              active.source == .phone,
+              active.type.id == "run" || active.type.id == "hiking" else { return }
         guard location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 50 else { return }
         let point = IOSRoutePoint(
             ts: Int(location.timestamp.timeIntervalSince1970),

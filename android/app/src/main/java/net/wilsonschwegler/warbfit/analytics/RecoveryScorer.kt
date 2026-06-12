@@ -13,7 +13,7 @@ import kotlin.math.roundToInt
  * itself ported from server/ingest/app/analysis/recovery.py.
  *
  * recovery() is a z-score + logistic composite. It is APPROXIMATE — not
- * WHOOP-identical (WHOOP's model is proprietary). It is a transparent,
+ * TRACKER-identical (TRACKER's model is proprietary). It is a transparent,
  * HRV-dominant, baseline-normalized proxy.
  *
  * Weighting (documented, grounded, explainable):
@@ -25,7 +25,7 @@ import kotlin.math.roundToInt
  * Each metric is standardized to a robust z-score against the personal baseline
  * (mean + EWMA-abs-dev spread). Missing terms are dropped and the weights
  * renormalized. The composite z is squashed through a logistic anchored so that
- * Z = 0 → ~58% (WHOOP's published population-average recovery).
+ * Z = 0 → ~58% (TRACKER's published population-average recovery).
  *
  * Cold-start: if the HRV baseline (dominant driver) is not yet usable
  * (< MIN_NIGHTS_SEED valid nights), recovery() returns null. Callers may use
@@ -53,10 +53,10 @@ object RecoveryScorer {
     /** Logistic offset so Z=0 → 58%. */
     const val logisticZ0: Double = -0.20
 
-    /** WHOOP-published population-average recovery (%). Cold-start fallback. */
+    /** TRACKER-published population-average recovery (%). Cold-start fallback. */
     const val populationMean: Double = 58.0
 
-    /** Recovery band thresholds (WHOOP color scheme). */
+    /** Recovery band thresholds (TRACKER color scheme). */
     const val bandRedMax: Double = 34.0
     const val bandYellowMax: Double = 67.0
 
@@ -105,7 +105,7 @@ object RecoveryScorer {
     // Recovery band
     // ─────────────────────────────────────────────────────────────────────────
 
-    /** WHOOP-style color band for a recovery score [0, 100]. */
+    /** TRACKER-style color band for a recovery score [0, 100]. */
     fun band(score: Double): String {
         if (score < bandRedMax) return "red"
         if (score < bandYellowMax) return "yellow"

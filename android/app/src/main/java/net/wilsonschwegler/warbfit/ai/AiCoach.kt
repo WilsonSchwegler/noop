@@ -2,7 +2,7 @@ package net.wilsonschwegler.warbfit.ai
 
 import android.content.Context
 import net.wilsonschwegler.warbfit.data.DailyMetric
-import net.wilsonschwegler.warbfit.data.WhoopRepository
+import net.wilsonschwegler.warbfit.data.TrackerRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -25,10 +25,10 @@ import kotlin.math.roundToInt
  * Anonymous: the only branding is the provider name the user selected. The system prompt does
  * not name any app author or model vendor.
  */
-class AiCoach(private val repo: WhoopRepository) {
+class AiCoach(private val repo: TrackerRepository) {
 
     /** The device key the rest of the app reads/writes daily metrics under. */
-    private val deviceId = "my-whoop"
+    private val deviceId = "my-tracker"
 
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)

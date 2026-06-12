@@ -21,7 +21,7 @@ import androidx.health.connect.client.time.TimeRangeFilter
 import net.wilsonschwegler.warbfit.data.AppleDaily
 import net.wilsonschwegler.warbfit.data.DailyMetric
 import net.wilsonschwegler.warbfit.data.ImportSummary
-import net.wilsonschwegler.warbfit.data.WhoopRepository
+import net.wilsonschwegler.warbfit.data.TrackerRepository
 import net.wilsonschwegler.warbfit.data.WorkoutRow
 import java.time.Instant
 import java.time.LocalDate
@@ -34,17 +34,17 @@ import kotlin.reflect.KClass
  *
  * Reads a fixed set of record types out of the on-device Health Connect store via
  * `androidx.health.connect:connect-client`, aggregates them **per LOCAL calendar day**
- * (the device's default zone), and upserts them into the same Room store the WHOOP/Apple
- * importers write to (see [WhoopRepository]). All timestamps written are wall-clock UNIX
+ * (the device's default zone), and upserts them into the same Room store the TRACKER/Apple
+ * importers write to (see [TrackerRepository]). All timestamps written are wall-clock UNIX
  * **seconds** (Long), matching the rest of the data layer.
  *
- * Device-id mapping (so this co-exists with real WHOOP + Apple Health data):
+ * Device-id mapping (so this co-exists with real TRACKER + Apple Health data):
  *   - Daily "Apple-style" aggregates (steps / calories / VO2max / weight / avg-HR)
  *     -> [AppleDaily] under deviceId "apple-health".
- *   - WHOOP-style autonomic markers (resting-HR / HRV / sleep-minutes / SpO2 / respiration)
- *     -> [DailyMetric] under deviceId "my-whoop", BUT only for days that have NO existing
- *     "my-whoop" daily row. Real WHOOP data is richer (recovery/strain/stages), so we never
- *     clobber it — we only backfill days WHOOP doesn't already own.
+ *   - TRACKER-style autonomic markers (resting-HR / HRV / sleep-minutes / SpO2 / respiration)
+ *     -> [DailyMetric] under deviceId "my-tracker", BUT only for days that have NO existing
+ *     "my-tracker" daily row. Real TRACKER data is richer (recovery/strain/stages), so we never
+ *     clobber it — we only backfill days TRACKER doesn't already own.
  *   - Exercise sessions -> [WorkoutRow] with source "health-connect".
  *
  * Permissions are assumed to have been granted by the UI (via the Health Connect permission
@@ -55,7 +55,7 @@ object HealthConnectImporter {
 
     const val SOURCE = "Health Connect"
 
-    private const val WHOOP = "my-whoop"
+    private const val TRACKER = "my-tracker"
     private const val APPLE = "apple-health"
     private const val HC_WORKOUT_SOURCE = "health-connect"
 
@@ -104,7 +104,7 @@ object HealthConnectImporter {
      * Assumes [PERMISSIONS] have already been granted. Returns [ImportSummary.failure] when
      * Health Connect is unavailable or the permissions are not actually granted.
      */
-    suspend fun import(context: Context, repo: WhoopRepository): ImportSummary {
+    suspend fun import(context: Context, repo: TrackerRepository): ImportSummary {
         if (sdkStatus(context) != HealthConnectClient.SDK_AVAILABLE) {
             return ImportSummary.failure(SOURCE, "Health Connect is not available on this device.")
         }
@@ -226,7 +226,7 @@ object HealthConnectImporter {
                         notes = r.title,
                     )
                 )
-                // Count exercises per local day on the start day for the WHOOP daily backfill.
+                // Count exercises per local day on the start day for the TRACKER daily backfill.
                 bucket(dayOf(r.startTime)).exerciseCount += 1
             }
         } catch (e: Exception) {
@@ -241,9 +241,9 @@ object HealthConnectImporter {
             )
         }
 
-        // Existing WHOOP-owned days: read ONCE so we never clobber richer WHOOP daily rows.
-        val whoopDays: Set<String> = try {
-            repo.days(WHOOP).map { it.day }.toSet()
+        // Existing TRACKER-owned days: read ONCE so we never clobber richer TRACKER daily rows.
+        val trackerDays: Set<String> = try {
+            repo.days(TRACKER).map { it.day }.toSet()
         } catch (e: Exception) {
             emptySet()
         }
@@ -272,9 +272,9 @@ object HealthConnectImporter {
                 )
             }
 
-            // DailyMetric (my-whoop): resting-HR / HRV / sleep-minutes / SpO2 / respiration,
-            // ONLY for days WHOOP does not already own.
-            if (day !in whoopDays) {
+            // DailyMetric (my-tracker): resting-HR / HRV / sleep-minutes / SpO2 / respiration,
+            // ONLY for days TRACKER does not already own.
+            if (day !in trackerDays) {
                 val rhr = if (a.rhrCount > 0) round(a.rhrSum.toDouble() / a.rhrCount).toInt() else null
                 val hrv = if (a.hrvCount > 0) round1(a.hrvSum / a.hrvCount) else null
                 val sleep = if (a.hasSleep) round1(a.sleepMin) else null
@@ -286,7 +286,7 @@ object HealthConnectImporter {
                 if (hasMetric) {
                     dailyRows.add(
                         DailyMetric(
-                            deviceId = WHOOP,
+                            deviceId = TRACKER,
                             day = day,
                             totalSleepMin = sleep,
                             restingHr = rhr,
@@ -307,7 +307,7 @@ object HealthConnectImporter {
                 repo.upsertAppleDaily(appleRows)
             }
             if (dailyRows.isNotEmpty()) {
-                repo.upsertDevice(WHOOP, name = "WHOOP")
+                repo.upsertDevice(TRACKER, name = "TRACKER")
                 repo.upsertDailyMetrics(dailyRows)
             }
             if (workouts.isNotEmpty()) {

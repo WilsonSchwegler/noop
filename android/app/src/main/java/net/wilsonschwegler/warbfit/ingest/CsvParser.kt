@@ -73,7 +73,7 @@ internal object HeaderNorm {
     }
 
     /**
-     * Localized WHOOP export column headers -> canonical English normalized keys. Keys are the
+     * Localized TRACKER export column headers -> canonical English normalized keys. Keys are the
      * diacritic-folded normalized form of the foreign header. German added from a real export
      * (issue #3); more languages can be appended here. Mirrors the Swift HeaderNorm.foreignAliases.
      */
@@ -330,9 +330,9 @@ internal fun Map<String, String>.bool(vararg keys: String): Boolean? {
     return null
 }
 
-// MARK: - Whoop timestamp parsing (mirror Swift WhoopTime)
+// MARK: - Tracker timestamp parsing (mirror Swift TrackerTime)
 
-internal object WhoopTime {
+internal object TrackerTime {
 
     /**
      * Parse a `Cycle timezone` string like `UTC+01:00`, `UTC-05:00`, `+01:00`, or
@@ -372,10 +372,10 @@ internal object WhoopTime {
     }
 
     /**
-     * Parse a Whoop CSV timestamp interpreted in the timezone given by
+     * Parse a Tracker CSV timestamp interpreted in the timezone given by
      * [offsetMinutes], returning **UTC unix epoch SECONDS** (Long), or null.
      *
-     * Mirrors Swift `WhoopTime.parse`:
+     * Mirrors Swift `TrackerTime.parse`:
      *   1. ISO-8601 with embedded offset (e.g. "...T...Z", "...+01:00", fractional secs) wins.
      *   2. Otherwise plain "YYYY-MM-DD HH:MM:SS" / " HH:MM" / "YYYY-MM-DD",
      *      interpreted at the supplied offset.

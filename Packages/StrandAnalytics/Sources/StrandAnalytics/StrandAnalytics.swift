@@ -1,7 +1,7 @@
 import Foundation
 
 /// On-device analytics for Strand (HRV, recovery, strain, sleep, workouts).
-/// Ported from my-whoop's server/ingest/app/analysis/*.py — see plan Milestone 3.
+/// Ported from my-tracker's server/ingest/app/analysis/*.py — see plan Milestone 3.
 ///
 /// Entry points (all pure, deterministic functions — no DB access):
 ///   - `HRZones`        — HR-max + 5 zones from age; time-in-zone from `[HRSample]`.

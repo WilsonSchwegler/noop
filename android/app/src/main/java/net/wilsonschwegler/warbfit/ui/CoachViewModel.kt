@@ -8,8 +8,8 @@ import net.wilsonschwegler.warbfit.ai.AiCoach
 import net.wilsonschwegler.warbfit.ai.AiKeyStore
 import net.wilsonschwegler.warbfit.ai.AiProvider
 import net.wilsonschwegler.warbfit.ai.ChatMsg
-import net.wilsonschwegler.warbfit.data.WhoopDatabase
-import net.wilsonschwegler.warbfit.data.WhoopRepository
+import net.wilsonschwegler.warbfit.data.TrackerDatabase
+import net.wilsonschwegler.warbfit.data.TrackerRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,7 +18,7 @@ import kotlinx.coroutines.launch
 /**
  * View model for the AI Coach screen.
  *
- * Holds the [AiCoach] engine (built over the same Room-backed [WhoopRepository] the rest of
+ * Holds the [AiCoach] engine (built over the same Room-backed [TrackerRepository] the rest of
  * the app uses) and the chat state. The API key and the chosen provider/model are persisted
  * by [AiKeyStore] — the key encrypted at rest in the Android Keystore, the provider/model as
  * plain (non-secret) preferences.
@@ -32,7 +32,7 @@ class CoachViewModel(app: Application) : AndroidViewModel(app) {
     // The networked coach, over the local store. No key is held here; the engine reads it from
     // the encrypted store at call time.
     private val aiCoach = AiCoach(
-        WhoopRepository(WhoopDatabase.get(app.applicationContext).whoopDao())
+        TrackerRepository(TrackerDatabase.get(app.applicationContext).trackerDao())
     )
 
     // MARK: - Transcript

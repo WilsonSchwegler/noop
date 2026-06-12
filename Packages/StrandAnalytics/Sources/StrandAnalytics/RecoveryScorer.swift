@@ -1,12 +1,12 @@
 import Foundation
-import WhoopProtocol
+import TrackerProtocol
 
 // RecoveryScorer.swift — resting HR during sleep + a transparent 0–100 recovery score.
 //
 // Ported from server/ingest/app/analysis/recovery.py.
 //
 // recovery() is a z-score + logistic composite. It is APPROXIMATE — not
-// WHOOP-identical (WHOOP's model is proprietary). It is a transparent,
+// TRACKER-identical (TRACKER's model is proprietary). It is a transparent,
 // HRV-dominant, baseline-normalized proxy.
 //
 // Weighting (documented, grounded, explainable):
@@ -20,7 +20,7 @@ import WhoopProtocol
 // Each metric is standardized to a robust z-score against the personal baseline
 // (mean + EWMA-abs-dev spread). Missing terms are dropped and the weights
 // renormalized. The composite z is squashed through a logistic anchored so that
-// Z = 0 → ~58% (WHOOP's published population-average recovery).
+// Z = 0 → ~58% (TRACKER's published population-average recovery).
 //
 // Cold-start: if the HRV baseline (dominant driver) is not yet usable
 // (< MIN_NIGHTS_SEED valid nights), recovery() returns nil. Callers may use
@@ -41,10 +41,10 @@ public enum RecoveryScorer {
     public static let logisticK: Double = 1.6
     /// Logistic offset so Z=0 → 58%.
     public static let logisticZ0: Double = -0.20
-    /// WHOOP-published population-average recovery (%). Cold-start fallback.
+    /// TRACKER-published population-average recovery (%). Cold-start fallback.
     public static let populationMean: Double = 58.0
 
-    /// Recovery band thresholds (WHOOP color scheme).
+    /// Recovery band thresholds (TRACKER color scheme).
     public static let bandRedMax: Double = 34.0
     public static let bandYellowMax: Double = 67.0
 
@@ -97,7 +97,7 @@ public enum RecoveryScorer {
 
     // MARK: - Recovery band
 
-    /// WHOOP-style color band for a recovery score [0, 100].
+    /// TRACKER-style color band for a recovery score [0, 100].
     public static func band(_ score: Double) -> String {
         if score < bandRedMax { return "red" }
         if score < bandYellowMax { return "yellow" }

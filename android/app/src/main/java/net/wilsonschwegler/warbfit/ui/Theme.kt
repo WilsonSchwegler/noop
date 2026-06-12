@@ -140,7 +140,7 @@ object Palette {
     /** Sample the recovery gradient at a recovery score 0..100. */
     fun recoveryColor(score: Double): Color = sample(recoveryStops, (score / 100.0).toFloat())
 
-    /** Sample the strain gradient at a strain value on the 0..21 Whoop scale. */
+    /** Sample the strain gradient at a strain value on the 0..21 Tracker scale. */
     fun strainColor(strain: Double): Color = sample(strainStops, (strain / 21.0).toFloat())
 
     /** The state word for a recovery score, per spec §9.3. */

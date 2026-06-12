@@ -150,7 +150,7 @@ fun InsightsScreen(vm: AppViewModel) {
     var journalLoaded by remember { mutableStateOf(false) }
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
-        val entries = vm.repo.journal("my-whoop", "0000-01-01", "9999-12-31")
+        val entries = vm.repo.journal("my-tracker", "0000-01-01", "9999-12-31")
         val byBehaviour = mutableMapOf<String, MutableSet<String>>()
         for (e in entries) if (e.answeredYes) {
             byBehaviour.getOrPut(e.question) { mutableSetOf() }.add(e.day)

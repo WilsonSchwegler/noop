@@ -58,7 +58,7 @@ import kotlin.math.roundToInt
  *   - an "All Sessions" WarbFitCard of fixed-height rows (date · sport · dur · HR · kcal ·
  *     dist · source).
  *
- * Sessions are loaded from BOTH cached sources — `repo.workouts("my-whoop", …)` and
+ * Sessions are loaded from BOTH cached sources — `repo.workouts("my-tracker", …)` and
  * `repo.workouts("apple-health", …)` — merged and shown newest first. The windowing is
  * anchored to the LATEST session (not "now"), so an old log still resolves; an empty
  * window auto-widens to the next larger range, exactly like the macOS screen.
@@ -72,9 +72,9 @@ fun WorkoutsScreen(vm: AppViewModel) {
     // Load both sources once. Whole history (epoch → now) per source, newest first.
     LaunchedEffect(Unit) {
         val now = System.currentTimeMillis() / 1000
-        val whoop = vm.repo.workouts("my-whoop", 0L, now)
+        val tracker = vm.repo.workouts("my-tracker", 0L, now)
         val apple = vm.repo.workouts("apple-health", 0L, now)
-        val merged = (whoop + apple).sortedByDescending { it.startTs }
+        val merged = (tracker + apple).sortedByDescending { it.startTs }
         allRows = merged
         loaded = true
         range = defaultRange(merged)
@@ -385,8 +385,8 @@ private fun SessionRow(row: WorkoutRow, background: Color) {
         )
         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
             SourceBadge(
-                if (row.isWhoop) "Fitness tracker" else "Apple",
-                tint = if (row.isWhoop) Palette.accent else Palette.metricCyan,
+                if (row.isTracker) "Fitness tracker" else "Apple",
+                tint = if (row.isTracker) Palette.accent else Palette.metricCyan,
             )
         }
     }
@@ -487,7 +487,7 @@ private fun sportGroups(rows: List<WorkoutRow>): List<SportGroup> =
         }
         .sortedWith(compareByDescending<SportGroup> { it.count }.thenByDescending { it.totalTimeS })
 
-private val WorkoutRow.isWhoop: Boolean get() = source.lowercase().contains("whoop")
+private val WorkoutRow.isTracker: Boolean get() = source.lowercase().contains("tracker")
 
 // MARK: - Formatting
 

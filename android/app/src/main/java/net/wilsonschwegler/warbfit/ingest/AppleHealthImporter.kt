@@ -7,7 +7,7 @@ import net.wilsonschwegler.warbfit.data.AppleDaily
 import net.wilsonschwegler.warbfit.data.DailyMetric
 import net.wilsonschwegler.warbfit.data.ImportSummary
 import net.wilsonschwegler.warbfit.data.MetricSeriesRow
-import net.wilsonschwegler.warbfit.data.WhoopRepository
+import net.wilsonschwegler.warbfit.data.TrackerRepository
 import net.wilsonschwegler.warbfit.data.WorkoutRow
 import org.xmlpull.v1.XmlPullParser
 import java.io.BufferedInputStream
@@ -88,7 +88,7 @@ object AppleHealthImporter {
     suspend fun importExport(
         context: Context,
         uri: Uri,
-        repo: WhoopRepository,
+        repo: TrackerRepository,
         deviceId: String = DEFAULT_DEVICE_ID,
     ): ImportSummary {
         val agg = Aggregator()
@@ -291,7 +291,7 @@ object AppleHealthImporter {
 
     private suspend fun persist(
         agg: Aggregator,
-        repo: WhoopRepository,
+        repo: TrackerRepository,
         deviceId: String,
     ): ImportSummary {
         val days = agg.finishDays() // sorted ascending by day; union of sample + sleep days

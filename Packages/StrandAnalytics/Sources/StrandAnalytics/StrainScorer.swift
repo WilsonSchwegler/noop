@@ -1,10 +1,10 @@
 import Foundation
-import WhoopProtocol
+import TrackerProtocol
 
 // StrainScorer.swift — cardiovascular load on a 0–21 logarithmic strain scale.
 //
 // Ported from server/ingest/app/analysis/strain.py. INDEPENDENT implementation of
-// published exercise-physiology methods (WHOOP-*like*, not a reproduction of the
+// published exercise-physiology methods (TRACKER-*like*, not a reproduction of the
 // proprietary algorithm; not medical advice).
 //
 // Pipeline:

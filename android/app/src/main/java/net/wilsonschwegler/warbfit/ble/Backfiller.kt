@@ -1,7 +1,7 @@
 package net.wilsonschwegler.warbfit.ble
 
 import android.content.Context
-import net.wilsonschwegler.warbfit.data.WhoopRepository
+import net.wilsonschwegler.warbfit.data.TrackerRepository
 import net.wilsonschwegler.warbfit.protocol.DeviceFamily
 import net.wilsonschwegler.warbfit.protocol.Framing
 import net.wilsonschwegler.warbfit.protocol.HistoricalMeta
@@ -31,7 +31,7 @@ import kotlinx.coroutines.sync.withLock
  * still acked (it advances the strap's trim) — that is how the offload progresses.
  *
  * CONCURRENCY: [ingest] is `suspend` and serialised by [mutex] so START/data/END chunk assembly is
- * never reordered, matching the Swift serial-drain task. The owning [WhoopBleClient] feeds frames
+ * never reordered, matching the Swift serial-drain task. The owning [TrackerBleClient] feeds frames
  * in arrival order from a single drain coroutine.
  *
  * RAW CAPTURE: the Swift Backfiller optionally persists raw frames (research toggle, default OFF).
@@ -40,7 +40,7 @@ import kotlinx.coroutines.sync.withLock
  * advanced, exactly as in the Swift default (raw-off) configuration. See the FLAG in the port notes.
  */
 class Backfiller(
-    private val repository: WhoopRepository,
+    private val repository: TrackerRepository,
     private val deviceId: String,
     private val cursorStore: TrimCursorStore,
     /**
@@ -54,10 +54,10 @@ class Backfiller(
      * the offset is a no-op for them; this is supplied only for the REALTIME_RAW_DATA fallback and
      * to mirror the Swift signature. Defaults to an identity ref (device == wall == now): the Swift
      * Backfiller falls back to exactly this when GET_CLOCK is silent, and type-47 still decodes to
-     * correct wall time. Settable by [WhoopBleClient] if a real correlation lands.
+     * correct wall time. Settable by [TrackerBleClient] if a real correlation lands.
      */
     var clockRef: ClockRef = ClockRef.identityNow(),
-    private val family: DeviceFamily = DeviceFamily.WHOOP4,
+    private val family: DeviceFamily = DeviceFamily.TRACKER4,
 ) {
 
     /** True while a historical offload session is active. */
@@ -78,7 +78,7 @@ class Backfiller(
     private var chunkOpen = false
 
     /**
-     * Called by [WhoopBleClient] when the strap signals a historical offload is beginning.
+     * Called by [TrackerBleClient] when the strap signals a historical offload is beginning.
      * chunkOpen starts TRUE: the biometric replay streams records immediately and sends one
      * HISTORY_START then repeated HISTORY_ENDs, so we must accumulate from the outset.
      * Port of Swift `begin()`.

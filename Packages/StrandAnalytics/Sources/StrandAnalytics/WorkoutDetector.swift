@@ -1,5 +1,5 @@
 import Foundation
-import WhoopProtocol
+import TrackerProtocol
 
 // WorkoutDetector.swift — retroactive workout detection from the 1 Hz store.
 //

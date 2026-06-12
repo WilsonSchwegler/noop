@@ -9,7 +9,7 @@ import java.io.IOException
 /**
  * Whole-store EXPORT / IMPORT for device migration.
  *
- * WarbFit keeps everything on-device in a single Room/SQLite file ([WhoopDatabase.DB_NAME]).
+ * WarbFit keeps everything on-device in a single Room/SQLite file ([TrackerDatabase.DB_NAME]).
  * Moving to a new phone therefore means moving exactly that one file. There is no cloud,
  * no account, nothing leaves the device except through these two explicit, user-driven
  * file operations (a SAF document the user picks).
@@ -53,12 +53,12 @@ object DataBackup {
         val appContext = context.applicationContext
 
         // Fold the WAL back into the main file so a plain byte-copy is a complete snapshot.
-        val db = WhoopDatabase.get(appContext)
+        val db = TrackerDatabase.get(appContext)
         db.query("PRAGMA wal_checkpoint(TRUNCATE)", null).use { cursor ->
             cursor.moveToFirst()
         }
 
-        val dbFile = appContext.getDatabasePath(WhoopDatabase.DB_NAME)
+        val dbFile = appContext.getDatabasePath(TrackerDatabase.DB_NAME)
         if (!dbFile.exists()) {
             throw IOException("No database to export yet.")
         }
@@ -99,13 +99,13 @@ object DataBackup {
             return ImportResult.Failed("Could not read the chosen file: ${e.message}")
         }
 
-        val dbFile = appContext.getDatabasePath(WhoopDatabase.DB_NAME)
+        val dbFile = appContext.getDatabasePath(TrackerDatabase.DB_NAME)
         val walFile = File(dbFile.path + "-wal")
         val shmFile = File(dbFile.path + "-shm")
         val rollbackFile = File(dbFile.path + ".import-bak")
 
         // 2. Close the live Room singleton so the file handles are released.
-        WhoopDatabase.close()
+        TrackerDatabase.close()
 
         // 3. Snapshot the current db so a failed copy can be rolled back.
         try {

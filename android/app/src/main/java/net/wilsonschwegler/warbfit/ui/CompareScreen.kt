@@ -78,7 +78,7 @@ data class CompareMetric(
     val title: String,
     val category: String,
     val unit: String,
-    val source: String,      // "my-whoop" or "apple-health"
+    val source: String,      // "my-tracker" or "apple-health"
     val decimals: Int,
 ) {
     val id: String get() = "$source:$key"
@@ -96,33 +96,33 @@ data class CompareMetric(
 /**
  * Canonical catalog — mirrors MetricCatalog.swift. Keys match exactly what the importers
  * write into metricSeries; [dailyPick], when non-null, is the matching column on
- * [DailyMetric] so a my-whoop metric can be derived from the daily cache as a fallback.
+ * [DailyMetric] so a my-tracker metric can be derived from the daily cache as a fallback.
  */
 private object CompareCatalog {
     val categories = listOf("Heart", "Recovery", "Sleep", "Strain", "Health")
 
     val all: List<CompareMetric> = listOf(
         // Heart
-        CompareMetric("avg_hr", "Average Heart Rate", "Heart", "bpm", "my-whoop", 0),
-        CompareMetric("max_hr", "Max Heart Rate", "Heart", "bpm", "my-whoop", 0),
-        CompareMetric("energy_kcal", "Calories", "Heart", "kcal", "my-whoop", 0),
+        CompareMetric("avg_hr", "Average Heart Rate", "Heart", "bpm", "my-tracker", 0),
+        CompareMetric("max_hr", "Max Heart Rate", "Heart", "bpm", "my-tracker", 0),
+        CompareMetric("energy_kcal", "Calories", "Heart", "kcal", "my-tracker", 0),
         CompareMetric("vo2max", "VO₂ Max", "Heart", "", "apple-health", 1),
         // Recovery
-        CompareMetric("recovery", "Recovery", "Recovery", "%", "my-whoop", 0),
-        CompareMetric("hrv", "Heart Rate Variability", "Recovery", "ms", "my-whoop", 0),
-        CompareMetric("rhr", "Resting Heart Rate", "Recovery", "bpm", "my-whoop", 0),
-        CompareMetric("resp_rate", "Respiratory Rate", "Recovery", "rpm", "my-whoop", 1),
-        CompareMetric("spo2", "Blood Oxygen", "Recovery", "%", "my-whoop", 0),
-        CompareMetric("skin_temp", "Skin Temperature", "Recovery", "°C", "my-whoop", 1),
+        CompareMetric("recovery", "Recovery", "Recovery", "%", "my-tracker", 0),
+        CompareMetric("hrv", "Heart Rate Variability", "Recovery", "ms", "my-tracker", 0),
+        CompareMetric("rhr", "Resting Heart Rate", "Recovery", "bpm", "my-tracker", 0),
+        CompareMetric("resp_rate", "Respiratory Rate", "Recovery", "rpm", "my-tracker", 1),
+        CompareMetric("spo2", "Blood Oxygen", "Recovery", "%", "my-tracker", 0),
+        CompareMetric("skin_temp", "Skin Temperature", "Recovery", "°C", "my-tracker", 1),
         // Sleep
-        CompareMetric("sleep_performance", "Sleep Performance", "Sleep", "%", "my-whoop", 0),
-        CompareMetric("sleep_total_min", "Asleep Time", "Sleep", "min", "my-whoop", 0),
-        CompareMetric("sleep_efficiency", "Sleep Efficiency", "Sleep", "%", "my-whoop", 0),
-        CompareMetric("sleep_deep_min", "Deep (SWS) Sleep", "Sleep", "min", "my-whoop", 0),
-        CompareMetric("sleep_rem_min", "REM Sleep", "Sleep", "min", "my-whoop", 0),
-        CompareMetric("sleep_light_min", "Light Sleep", "Sleep", "min", "my-whoop", 0),
+        CompareMetric("sleep_performance", "Sleep Performance", "Sleep", "%", "my-tracker", 0),
+        CompareMetric("sleep_total_min", "Asleep Time", "Sleep", "min", "my-tracker", 0),
+        CompareMetric("sleep_efficiency", "Sleep Efficiency", "Sleep", "%", "my-tracker", 0),
+        CompareMetric("sleep_deep_min", "Deep (SWS) Sleep", "Sleep", "min", "my-tracker", 0),
+        CompareMetric("sleep_rem_min", "REM Sleep", "Sleep", "min", "my-tracker", 0),
+        CompareMetric("sleep_light_min", "Light Sleep", "Sleep", "min", "my-tracker", 0),
         // Strain
-        CompareMetric("strain", "Day Strain", "Strain", "/21", "my-whoop", 1),
+        CompareMetric("strain", "Day Strain", "Strain", "/21", "my-tracker", 1),
         CompareMetric("steps", "Steps", "Strain", "", "apple-health", 0),
         CompareMetric("active_kcal", "Active Energy", "Strain", "kcal", "apple-health", 0),
         // Health / Body
@@ -136,7 +136,7 @@ private object CompareCatalog {
 
     fun byKey(key: String): CompareMetric? = all.firstOrNull { it.key == key }
 
-    /** Map a my-whoop metric key to the matching DailyMetric column accessor, if any. */
+    /** Map a my-tracker metric key to the matching DailyMetric column accessor, if any. */
     fun dailyPick(key: String): ((DailyMetric) -> Double?)? = when (key) {
         "recovery" -> { d -> d.recovery }
         "strain" -> { d -> d.strain }
@@ -298,9 +298,9 @@ fun CompareScreen(vm: AppViewModel) {
     val selectionKey = selected.joinToString("|") { it.id }
     LaunchedEffect(selectionKey, days) {
         for (metric in selected) {
-            // Always (re)load derived-from-daily my-whoop series when the cache grew;
+            // Always (re)load derived-from-daily my-tracker series when the cache grew;
             // metricSeries-only metrics are loaded once.
-            val pick = if (metric.source == "my-whoop") CompareCatalog.dailyPick(metric.key) else null
+            val pick = if (metric.source == "my-tracker") CompareCatalog.dailyPick(metric.key) else null
             val needsLoad = !fullSeries.containsKey(metric.id) ||
                 (pick != null && fullSeries[metric.id].isNullOrEmpty())
             if (needsLoad) {
@@ -437,7 +437,7 @@ fun CompareScreen(vm: AppViewModel) {
 
 /**
  * Load the full history for [metric] (ascending by day). Mirrors macOS
- * repo.series(key, source) over the generic metricSeries store; for core my-whoop
+ * repo.series(key, source) over the generic metricSeries store; for core my-tracker
  * metrics with a matching DailyMetric column, falls back to the daily cache when the
  * generic store is empty so the screen shows real on-device data.
  */
@@ -454,12 +454,12 @@ private suspend fun loadFullSeries(
         .sortedBy { it.first }
     if (generic.isNotEmpty()) return generic
 
-    // Fallback: derive from the daily metric cache for my-whoop columns.
-    if (metric.source == "my-whoop") {
+    // Fallback: derive from the daily metric cache for my-tracker columns.
+    if (metric.source == "my-tracker") {
         val pick = CompareCatalog.dailyPick(metric.key)
         if (pick != null) {
-            // Merged: imported WHOOP days win; on-device computed days gap-fill the series.
-            val all = vm.repo.daysMerged("my-whoop")
+            // Merged: imported TRACKER days win; on-device computed days gap-fill the series.
+            val all = vm.repo.daysMerged("my-tracker")
             val derived = if (all.isNotEmpty()) all else cachedDays
             return derived.mapNotNull { d -> pick(d)?.let { d.day to it } }.sortedBy { it.first }
         }

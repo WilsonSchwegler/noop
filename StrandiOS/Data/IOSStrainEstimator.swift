@@ -1,6 +1,6 @@
 import Foundation
 import StrandAnalytics
-import WhoopProtocol
+import TrackerProtocol
 
 enum IOSStrainEstimator {
     /// ACSM/Norton intensity terminology places light effort around 30% HRR
@@ -14,6 +14,8 @@ enum IOSStrainEstimator {
     private static let sleepingMET = 0.95
     private static let quietAwakeMET = 1.0
     private static let moderateActivityMET = 3.0
+    private static let exertionRestingHRKeyPrefix = "warbfit.exertion.restingHRBaseline."
+    private static let validRestingHRRange = 30.0...120.0
 
     static func combine(_ strains: [Double]) -> Double? {
         let valid = strains.filter { $0 > 0 }
@@ -29,20 +31,46 @@ enum IOSStrainEstimator {
         return StrainScorer.trimpToStrain(trimp(fromStrain: strain) / capacity)
     }
 
+    /// Resting HR for exertion is a calibration input for HR reserve, so prefer a
+    /// stable personal baseline over one noisy night or a same-day low percentile.
+    static func exertionRestingHR(baseline: Double? = nil,
+                                  recentRestingHR: Double? = nil,
+                                  samples: [HRSample] = [],
+                                  source: IOSDeviceSource? = nil) -> Double {
+        if let baseline = sanitizedRestingHR(baseline) { return baseline }
+        if let source, let cached = cachedExertionRestingHR(for: source) { return cached }
+        if source == nil, let cached = cachedExertionRestingHR(for: IOSDeviceSource.current()) { return cached }
+        if let recent = sanitizedRestingHR(recentRestingHR) { return recent }
+        if !samples.isEmpty { return estimatedRestingHR(from: samples) }
+        return StrainScorer.defaultRestingHR
+    }
+
+    static func saveExertionRestingHRBaseline(_ restingHR: Double?, for source: IOSDeviceSource) {
+        guard let restingHR = sanitizedRestingHR(restingHR) else { return }
+        UserDefaults.standard.set(restingHR, forKey: exertionRestingHRKey(for: source))
+    }
+
+    static func cachedExertionRestingHR(for source: IOSDeviceSource) -> Double? {
+        let value = UserDefaults.standard.double(forKey: exertionRestingHRKey(for: source))
+        return sanitizedRestingHR(value)
+    }
+
     static func strain(hr: [HRSample],
                        gravity: [GravitySample] = [],
                        workoutTypeId: String? = nil,
                        maxHR: Double? = nil,
-                       restingHR: Double? = nil) -> Double? {
+                       restingHR: Double? = nil,
+                       physiologySex: String = "nonbinary") -> Double? {
         guard hr.count >= 2 else { return nil }
         _ = gravity
         let sorted = hr.sorted { $0.ts < $1.ts }
-        let effectiveResting = restingHR ?? (workoutTypeId == nil ? estimatedRestingHR(from: sorted) : StrainScorer.defaultRestingHR)
+        let effectiveResting = restingHR
+            ?? cachedExertionRestingHR(for: IOSDeviceSource.current())
+            ?? (workoutTypeId == nil ? estimatedRestingHR(from: sorted) : StrainScorer.defaultRestingHR)
         let effectiveMax = maxHR ?? StrainScorer.tanakaHRmax(age: Double(StrainScorer.defaultAge))
 
         return positive(StrainScorer.strain(sorted, maxHR: effectiveMax, restingHR: effectiveResting))
-            ?? positive(StrainScorer.strain(sorted, maxHR: effectiveMax, restingHR: effectiveResting, method: .banister))
-            ?? shortWindowStrain(sorted, maxHR: effectiveMax, restingHR: effectiveResting)
+            ?? shortWindowStrain(sorted, maxHR: effectiveMax, restingHR: effectiveResting, physiologySex: physiologySex)
     }
 
     static func strain(metricSamples: [IOSMetricHRSample]) -> Double? {
@@ -51,33 +79,47 @@ enum IOSStrainEstimator {
 
     static func awakeDayStrain(metricSamples: [IOSMetricHRSample],
                                maxHR: Double? = nil,
-                               restingHR: Double? = nil) -> Double? {
+                               restingHR: Double? = nil,
+                               physiologySex: String = "nonbinary") -> Double? {
         let hr = metricSamples.map { HRSample(ts: $0.ts, bpm: $0.bpm) }
-        return awakeDayStrain(hr: hr, maxHR: maxHR, restingHR: restingHR)
+        return awakeDayStrain(hr: hr, maxHR: maxHR, restingHR: restingHR, physiologySex: physiologySex)
     }
 
     static func awakeDayStrain(hr: [HRSample],
                                maxHR: Double? = nil,
-                               restingHR: Double? = nil) -> Double? {
+                               restingHR: Double? = nil,
+                               physiologySex: String = "nonbinary") -> Double? {
         let sorted = hr
             .filter { $0.bpm >= 30 && $0.bpm <= 220 }
             .sorted { $0.ts < $1.ts }
         guard sorted.count >= 2 else { return nil }
-        let effectiveResting = restingHR ?? estimatedRestingHR(from: sorted)
+        let effectiveResting = restingHR
+            ?? cachedExertionRestingHR(for: IOSDeviceSource.current())
+            ?? estimatedRestingHR(from: sorted)
         let effectiveMax = maxHR ?? StrainScorer.tanakaHRmax(age: Double(StrainScorer.defaultAge))
-        return intervalAwareDailyStrain(sorted, maxHR: effectiveMax, restingHR: effectiveResting)
+        return intervalAwareDailyStrain(sorted, maxHR: effectiveMax, restingHR: effectiveResting, physiologySex: physiologySex)
     }
 
     private static func estimatedRestingHR(from hr: [HRSample]) -> Double {
         let values = hr.map(\.bpm).sorted()
         guard !values.isEmpty else { return StrainScorer.defaultRestingHR }
         let index = min(values.count - 1, max(0, Int(Double(values.count - 1) * 0.10)))
-        return Double(values[index])
+        return sanitizedRestingHR(Double(values[index])) ?? StrainScorer.defaultRestingHR
+    }
+
+    private static func sanitizedRestingHR(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, validRestingHRRange.contains(value) else { return nil }
+        return value
+    }
+
+    private static func exertionRestingHRKey(for source: IOSDeviceSource) -> String {
+        exertionRestingHRKeyPrefix + source.rawValue
     }
 
     private static func shortWindowStrain(_ hr: [HRSample],
                                           maxHR: Double,
-                                          restingHR: Double) -> Double? {
+                                          restingHR: Double,
+                                          physiologySex: String) -> Double? {
         guard hr.count >= 2, maxHR > restingHR else { return nil }
         let reserve = maxHR - restingHR
         var trimp = 0.0
@@ -91,12 +133,13 @@ enum IOSStrainEstimator {
         }
 
         return positive(StrainScorer.trimpToStrain(trimp))
-            ?? shortWindowBanisterStrain(hr, maxHR: maxHR, restingHR: restingHR)
+            ?? shortWindowBanisterStrain(hr, maxHR: maxHR, restingHR: restingHR, physiologySex: physiologySex)
     }
 
     private static func shortWindowBanisterStrain(_ hr: [HRSample],
                                                   maxHR: Double,
-                                                  restingHR: Double) -> Double? {
+                                                  restingHR: Double,
+                                                  physiologySex: String) -> Double? {
         guard hr.count >= 2, maxHR > restingHR else { return nil }
         let reserve = maxHR - restingHR
         var trimp = 0.0
@@ -107,7 +150,8 @@ enum IOSStrainEstimator {
             let seconds = max(1, min(60, next.ts - current.ts))
             let x = max(0, min(1, (Double(current.bpm) - restingHR) / reserve))
             if x > 0 {
-                trimp += (Double(seconds) / 60.0) * x * StrainScorer.banisterScale * exp(StrainScorer.banisterBMen * x)
+                let b = banisterCoefficient(for: physiologySex)
+                trimp += (Double(seconds) / 60.0) * x * StrainScorer.banisterScale * exp(b * x)
             }
         }
 
@@ -116,7 +160,8 @@ enum IOSStrainEstimator {
 
     private static func intervalAwareDailyStrain(_ sorted: [HRSample],
                                                  maxHR: Double,
-                                                 restingHR: Double) -> Double? {
+                                                 restingHR: Double,
+                                                 physiologySex: String) -> Double? {
         guard sorted.count >= 2 else { return nil }
         guard maxHR > restingHR else { return nil }
         let reserve = maxHR - restingHR
@@ -132,7 +177,8 @@ enum IOSStrainEstimator {
             guard x >= dailyLightIntensityFloorHRR else { continue }
             let edwards = Double(edwardsWeight(for: x))
             let dailyX = (x - dailyLightIntensityFloorHRR) / (1.0 - dailyLightIntensityFloorHRR)
-            let banister = dailyX * StrainScorer.banisterScale * exp(StrainScorer.banisterBMen * dailyX)
+            let b = banisterCoefficient(for: physiologySex)
+            let banister = dailyX * StrainScorer.banisterScale * exp(b * dailyX)
             trimp += minutes * max(edwards, banister)
         }
 
@@ -142,9 +188,24 @@ enum IOSStrainEstimator {
 
     private static var quietAwakeTRIMPPerMinute: Double {
         let moderateX = (dailyModerateIntensityFloorHRR - dailyLightIntensityFloorHRR) / (1.0 - dailyLightIntensityFloorHRR)
-        let moderateLoad = moderateX * StrainScorer.banisterScale * exp(StrainScorer.banisterBMen * moderateX)
+        let moderateLoad = moderateX * StrainScorer.banisterScale * exp(neutralBanisterCoefficient * moderateX)
         let metFraction = (quietAwakeMET - sleepingMET) / (moderateActivityMET - sleepingMET)
         return max(0, moderateLoad * metFraction)
+    }
+
+    private static var neutralBanisterCoefficient: Double {
+        (StrainScorer.banisterBMen + StrainScorer.banisterBWomen) / 2.0
+    }
+
+    private static func banisterCoefficient(for physiologySex: String) -> Double {
+        switch physiologySex.lowercased() {
+        case let sex where sex.hasPrefix("f"):
+            return StrainScorer.banisterBWomen
+        case let sex where sex.hasPrefix("m"):
+            return StrainScorer.banisterBMen
+        default:
+            return neutralBanisterCoefficient
+        }
     }
 
     private static func edwardsWeight(for pctHRR: Double) -> Int {

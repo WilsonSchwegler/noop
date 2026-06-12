@@ -47,7 +47,7 @@ import net.wilsonschwegler.warbfit.data.DataBackup
 import net.wilsonschwegler.warbfit.data.ImportSummary
 import net.wilsonschwegler.warbfit.ingest.AppleHealthImporter
 import net.wilsonschwegler.warbfit.ingest.HealthConnectImporter
-import net.wilsonschwegler.warbfit.ingest.WhoopCsvImporter
+import net.wilsonschwegler.warbfit.ingest.TrackerCsvImporter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -58,21 +58,21 @@ import kotlinx.coroutines.withContext
  * Overline / WarbFitType / Palette).
  *
  * The macOS screen is built around "bring your history in once, then it's yours": three
- * source cards (WHOOP Export, Apple Health, Live BLE) plus on-device file import. On
+ * source cards (TRACKER Export, Apple Health, Live BLE) plus on-device file import. On
  * Android the on-device store is a single Room/SQLite file, and the real, working
  * migration path is whole-store export/import via [DataBackup] (a SAF document the user
  * picks). So this screen keeps the macOS structure but maps each card to what Android
  * actually has:
  *
- *   - WHOOP data    — live counts of the cached "my-whoop" history, plus a working import
- *                     of a WHOOP .zip/.csv export (app.whoop.com → Data Management) via
- *                     [net.wilsonschwegler.warbfit.ingest.WhoopCsvImporter].
+ *   - TRACKER data    — live counts of the cached "my-tracker" history, plus a working import
+ *                     of a TRACKER .zip/.csv export (app.tracker.com → Data Management) via
+ *                     [net.wilsonschwegler.warbfit.ingest.TrackerCsvImporter].
  *   - Apple Health  — live counts of cached "apple-health" data, plus a working streaming
  *                     import of an Apple Health export.zip/export.xml via
  *                     [net.wilsonschwegler.warbfit.ingest.AppleHealthImporter].
  *   - Health Connect— native Android import (steps/HR/HRV/sleep/SpO₂/weight/workouts) via
  *                     [net.wilsonschwegler.warbfit.ingest.HealthConnectImporter], gated on runtime permission.
- *   - WHOOP Strap   — the live BLE bond/stream status, straight from the LiveState flow.
+ *   - TRACKER Strap   — the live BLE bond/stream status, straight from the LiveState flow.
  *   - Backup        — Export / Import the whole on-device database through [DataBackup],
  *                     wired to ActivityResult document launchers.
  */
@@ -83,17 +83,17 @@ fun DataSourcesScreen(vm: AppViewModel) {
     val live by vm.live.collectAsStateWithLifecycle()
 
     // Cached-store counts, loaded once from the repo (newest data is fine to recount).
-    var whoopDays by remember { mutableStateOf<Int?>(null) }
-    var whoopWorkouts by remember { mutableStateOf<Int?>(null) }
-    var whoopHasHr by remember { mutableStateOf(false) }
+    var trackerDays by remember { mutableStateOf<Int?>(null) }
+    var trackerWorkouts by remember { mutableStateOf<Int?>(null) }
+    var trackerHasHr by remember { mutableStateOf(false) }
     var appleDays by remember { mutableStateOf<Int?>(null) }
     var appleWorkouts by remember { mutableStateOf<Int?>(null) }
 
     LaunchedEffect(Unit) {
         val now = System.currentTimeMillis() / 1000
-        whoopDays = vm.repo.days("my-whoop").size
-        whoopWorkouts = vm.repo.workouts("my-whoop", 0L, now).size
-        whoopHasHr = vm.repo.latestHrSampleTs("my-whoop") != null
+        trackerDays = vm.repo.days("my-tracker").size
+        trackerWorkouts = vm.repo.workouts("my-tracker", 0L, now).size
+        trackerHasHr = vm.repo.latestHrSampleTs("my-tracker") != null
         appleDays = vm.repo.appleDaily("apple-health", "0000-01-01", "9999-12-31").size
         appleWorkouts = vm.repo.workouts("apple-health", 0L, now).size
     }
@@ -142,9 +142,9 @@ fun DataSourcesScreen(vm: AppViewModel) {
 
     suspend fun refreshCounts() {
         val nowS = System.currentTimeMillis() / 1000
-        whoopDays = vm.repo.days("my-whoop").size
-        whoopWorkouts = vm.repo.workouts("my-whoop", 0L, nowS).size
-        whoopHasHr = vm.repo.latestHrSampleTs("my-whoop") != null
+        trackerDays = vm.repo.days("my-tracker").size
+        trackerWorkouts = vm.repo.workouts("my-tracker", 0L, nowS).size
+        trackerHasHr = vm.repo.latestHrSampleTs("my-tracker") != null
         appleDays = vm.repo.appleDaily("apple-health", "0000-01-01", "9999-12-31").size
         appleWorkouts = vm.repo.workouts("apple-health", 0L, nowS).size
     }
@@ -163,9 +163,9 @@ fun DataSourcesScreen(vm: AppViewModel) {
     }
 
     // SAF pickers — the importers auto-detect zip vs csv/xml from the file's content.
-    val whoopImportLauncher = rememberLauncherForActivityResult(
+    val trackerImportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
-    ) { uri -> if (uri != null) runImport { WhoopCsvImporter.importZip(context, uri, vm.repo) } }
+    ) { uri -> if (uri != null) runImport { TrackerCsvImporter.importZip(context, uri, vm.repo) } }
 
     val appleImportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
@@ -213,20 +213,20 @@ fun DataSourcesScreen(vm: AppViewModel) {
                 "backfills your whole history in about a minute. Working now on Android.",
         ) {
             StatePill(
-                title = if (whoopHasHr) "Streaming locally" else "No samples yet",
-                tone = if (whoopHasHr) StrandTone.Positive else StrandTone.Neutral,
+                title = if (trackerHasHr) "Streaming locally" else "No samples yet",
+                tone = if (trackerHasHr) StrandTone.Positive else StrandTone.Neutral,
                 showsDot = true,
             )
             CountLine(
-                primary = whoopDays?.let { "$it days" } ?: "—",
-                secondary = whoopWorkouts?.let { "$it workouts stored" } ?: "Counting…",
+                primary = trackerDays?.let { "$it days" } ?: "—",
+                secondary = trackerWorkouts?.let { "$it workouts stored" } ?: "Counting…",
             )
             BackupButton(
                 label = "Import fitness tracker export (.zip)",
                 icon = Icons.Filled.FileUpload,
                 enabled = !busy,
                 modifier = Modifier.fillMaxWidth(),
-            ) { whoopImportLauncher.launch(arrayOf("*/*")) }
+            ) { trackerImportLauncher.launch(arrayOf("*/*")) }
         }
 
         // --- Apple Health ---

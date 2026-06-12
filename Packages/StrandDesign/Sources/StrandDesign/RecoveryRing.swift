@@ -13,7 +13,7 @@ public struct RecoveryRing: View {
 
     /// Recovery score 0...100.
     public var score: Double
-    /// Optional supporting line, e.g. "HRV 62ms · RHR 51 · ready for moderate strain".
+    /// Optional supporting line, e.g. "HRV 62ms · RHR 51 · ready for moderate exertion".
     public var supporting: String?
     /// Diameter of the ring.
     public var diameter: CGFloat
@@ -33,7 +33,7 @@ public struct RecoveryRing: View {
         lineWidth: CGFloat = 16,
         showsLabel: Bool = true,
         showsHover: Bool = true,
-        valueFormat: @escaping (Double) -> String = { "Recovery \(Int($0.rounded()))" }
+        valueFormat: @escaping (Double) -> String = { "Readiness \(Int($0.rounded()))" }
     ) {
         self.score = score
         self.supporting = supporting
@@ -251,7 +251,7 @@ public struct RecoveryArc: Shape {
             RecoveryRing(score: 22, supporting: "HRV 38ms · RHR 58 · take it easy", diameter: 220)
             RecoveryRing(score: 55, supporting: "HRV 49ms · RHR 54 · moderate ok", diameter: 220)
         }
-        Text("Hover a ring for a recovery + state-word tooltip.")
+        Text("Hover a ring for a readiness + state-word tooltip.")
             .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
     }
     .padding(40)
@@ -261,7 +261,7 @@ public struct RecoveryArc: Shape {
 
 #Preview("RecoveryRing — primed/peak") {
     HStack(spacing: 28) {
-        RecoveryRing(score: 78, supporting: "HRV 62ms · RHR 51 · ready for moderate strain", diameter: 220)
+        RecoveryRing(score: 78, supporting: "HRV 62ms · RHR 51 · ready for moderate exertion", diameter: 220)
         RecoveryRing(score: 91, supporting: "HRV 74ms · RHR 47 · primed to push", diameter: 220)
     }
     .padding(40)

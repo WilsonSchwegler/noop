@@ -7,11 +7,11 @@ import net.wilsonschwegler.warbfit.analytics.IllnessWatch
 import net.wilsonschwegler.warbfit.analytics.IntelligenceEngine
 import net.wilsonschwegler.warbfit.analytics.UserProfile
 import net.wilsonschwegler.warbfit.ble.LiveState
-import net.wilsonschwegler.warbfit.ble.WhoopBleClient
-import net.wilsonschwegler.warbfit.ble.WhoopModel
+import net.wilsonschwegler.warbfit.ble.TrackerBleClient
+import net.wilsonschwegler.warbfit.ble.TrackerModel
 import net.wilsonschwegler.warbfit.data.DailyMetric
-import net.wilsonschwegler.warbfit.data.WhoopDatabase
-import net.wilsonschwegler.warbfit.data.WhoopRepository
+import net.wilsonschwegler.warbfit.data.TrackerDatabase
+import net.wilsonschwegler.warbfit.data.TrackerRepository
 import net.wilsonschwegler.warbfit.protocol.CommandNumber
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,29 +32,29 @@ import kotlinx.coroutines.launch
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // Offline store.
-    private val repository: WhoopRepository =
-        WhoopRepository(WhoopDatabase.get(app.applicationContext).whoopDao())
+    private val repository: TrackerRepository =
+        TrackerRepository(TrackerDatabase.get(app.applicationContext).trackerDao())
 
     // BLE client — owns the GATT connection, emits LiveState, AND persists decoded live + historical
     // streams into [repository] (shares the same process-wide DB).
-    val ble = WhoopBleClient(app.applicationContext, repository = repository)
+    val ble = TrackerBleClient(app.applicationContext, repository = repository)
 
-    val repo: WhoopRepository get() = repository
+    val repo: TrackerRepository get() = repository
 
     // Body profile (age/sex/weight/height + HR-max override) — the same SharedPreferences
     // store the Settings screen edits. Feeds the on-device scorer's HRmax/zones/calories.
     private val profileStore = ProfileStore.from(app.applicationContext)
 
     /** The imported strap source id (raw streams + imported history live under this). */
-    private val deviceId = "my-whoop"
+    private val deviceId = "my-tracker"
 
     /** Live connection + biometric snapshot, surfaced straight from the BLE client. */
     val live: StateFlow<LiveState> = ble.state
 
-    /** Which strap the user is pairing — drives the scan filter in [connect]. Defaults to WHOOP 4.0. */
-    private val _selectedModel = MutableStateFlow(WhoopModel.WHOOP4)
-    val selectedModel: StateFlow<WhoopModel> = _selectedModel.asStateFlow()
-    fun setSelectedModel(model: WhoopModel) { _selectedModel.value = model }
+    /** Which strap the user is pairing — drives the scan filter in [connect]. Defaults to TRACKER 4.0. */
+    private val _selectedModel = MutableStateFlow(TrackerModel.TRACKER4)
+    val selectedModel: StateFlow<TrackerModel> = _selectedModel.asStateFlow()
+    fun setSelectedModel(model: TrackerModel) { _selectedModel.value = model }
 
     // MARK: - Smoothed BPM (median over a short window, mirrors AppModel.bpm)
 
@@ -77,9 +77,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Recent daily metrics (newest last), backing the Today grid + illness watch.
-     * MERGED: imported "my-whoop" rows win per day; on-device computed "my-whoop-warbfit"
+     * MERGED: imported "my-tracker" rows win per day; on-device computed "my-tracker-warbfit"
      * rows (from [IntelligenceEngine]) gap-fill, so recovery/strain/sleep populate from
-     * the strap with no WHOOP import.
+     * the strap with no TRACKER import.
      */
     val recentDays: StateFlow<List<DailyMetric>> =
         repository.daysMergedFlow(deviceId)
@@ -102,7 +102,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
         // Turn the strap's offloaded raw data into dashboard scores on launch and every
         // 15 minutes, so recovery / strain / sleep populate from the strap itself with no
-        // import. IntelligenceEngine computes, persists under "my-whoop-warbfit", and the
+        // import. IntelligenceEngine computes, persists under "my-tracker-warbfit", and the
         // merged daysMergedFlow above republishes the freshly computed scores to the UI.
         // Mirrors macOS AppModel's launch + 15-min analyze loop.
         viewModelScope.launch {

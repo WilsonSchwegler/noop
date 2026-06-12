@@ -9,9 +9,9 @@ import org.json.JSONObject
  *
  * The live persistence path decodes frames with `extractStreams(...)` (which yields a protocol
  * `Streams` of hr/rr/events/battery) and then needs a [StreamBatch] to hand to
- * [WhoopRepository.insert]. This mapper performs that conversion, including the deterministic
+ * [TrackerRepository.insert]. This mapper performs that conversion, including the deterministic
  * sorted-keys JSON encoding of each event's residual payload — the exact analog of Swift
- * `WhoopStore.encodePayload(_:)` (JSONEncoder with `.sortedKeys`), so the same payload always
+ * `TrackerStore.encodePayload(_:)` (JSONEncoder with `.sortedKeys`), so the same payload always
  * serializes byte-identically (important for the event natural-key dedupe + macOS parity).
  *
  * `ts` widens Int (protocol, wall-clock unix seconds) -> Long (Room), matching every other ts in
@@ -30,7 +30,7 @@ object StreamPersistence {
     )
 
     /**
-     * Deterministic sorted-keys JSON for an event payload. Port of `WhoopStore.encodePayload`.
+     * Deterministic sorted-keys JSON for an event payload. Port of `TrackerStore.encodePayload`.
      *
      * `org.json.JSONObject` does NOT guarantee key order, so we build the JSON manually with keys
      * sorted ascending (the same ordering `JSONEncoder.outputFormatting = [.sortedKeys]` produces),

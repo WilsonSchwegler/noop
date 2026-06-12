@@ -66,8 +66,8 @@ StrandiOS/
   Resources/           Info.plist, entitlements, assets, app icon
 
 Packages/
-  WhoopProtocol/       Internal BLE frame parsing, commands, CRC, protocol types
-  WhoopStore/          Local SQLite persistence via GRDB
+  TrackerProtocol/       Internal BLE frame parsing, commands, CRC, protocol types
+  TrackerStore/          Local SQLite persistence via GRDB
   StrandAnalytics/     HRV, recovery, strain, sleep, workout, readiness math
   StrandDesign/        Shared SwiftUI colors, charts, and components
 
@@ -75,7 +75,7 @@ android/
   app/                 Android WarbFit application
 ```
 
-The `WhoopProtocol` and `WhoopStore` package names are internal implementation
+The `TrackerProtocol` and `TrackerStore` package names are internal implementation
 names retained to avoid a risky source/storage migration. They are part of the
 active app build.
 

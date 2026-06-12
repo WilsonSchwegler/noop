@@ -129,7 +129,7 @@ public enum StrandPalette {
         sample(stops: recoveryStops, at: score / 100.0)
     }
 
-    /// Sample the strain gradient at a strain value on the 0...21 Whoop scale.
+    /// Sample the strain gradient at a strain value on the 0...21 Tracker scale.
     public static func strainColor(_ strain: Double) -> Color {
         sample(stops: strainStops, at: strain / 21.0)
     }

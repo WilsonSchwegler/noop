@@ -6,8 +6,8 @@ connected to any fitness tracker manufacturer.
 
 The app builds on open-source interoperability research and libraries:
 
-- `johnmiddleton12/my-whoop`: protocol and storage research that informed the
-  internal `WhoopProtocol` and `WhoopStore` Swift packages.
+- `johnmiddleton12/my-tracker`: protocol and storage research that informed the
+  internal `TrackerProtocol` and `TrackerStore` Swift packages.
 - `b-nnett/goose`: protocol research for newer strap hardware families.
 - `GRDB.swift`: SQLite persistence used by the Swift local store.
 - `ZIPFoundation`: local archive handling for imports and backups.

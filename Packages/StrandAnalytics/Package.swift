@@ -6,11 +6,11 @@ let package = Package(
     platforms: [.macOS(.v13), .iOS(.v16)],
     products: [.library(name: "StrandAnalytics", targets: ["StrandAnalytics"])],
     dependencies: [
-        .package(path: "../WhoopProtocol"),
-        .package(path: "../WhoopStore"),
+        .package(path: "../TrackerProtocol"),
+        .package(path: "../TrackerStore"),
     ],
     targets: [
-        .target(name: "StrandAnalytics", dependencies: ["WhoopProtocol", "WhoopStore"]),
+        .target(name: "StrandAnalytics", dependencies: ["TrackerProtocol", "TrackerStore"]),
         .testTarget(name: "StrandAnalyticsTests", dependencies: ["StrandAnalytics"]),
     ]
 )

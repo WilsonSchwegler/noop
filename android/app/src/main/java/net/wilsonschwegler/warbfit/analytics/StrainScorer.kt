@@ -11,7 +11,7 @@ import kotlin.math.roundToLong
  *
  * Faithful Kotlin port of StrandAnalytics/StrainScorer.swift (verified on macOS),
  * itself ported from server/ingest/app/analysis/strain.py. INDEPENDENT implementation
- * of published exercise-physiology methods (WHOOP-*like*, not a reproduction of the
+ * of published exercise-physiology methods (TRACKER-*like*, not a reproduction of the
  * proprietary algorithm; not medical advice).
  *
  * Pipeline:

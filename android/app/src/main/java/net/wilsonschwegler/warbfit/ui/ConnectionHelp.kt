@@ -27,9 +27,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /**
  * In-app connection walkthrough. The number-one reason a strap won't connect is the official
- * WHOOP app holding it (a strap only pairs with ONE app at a time), followed by Bluetooth being
+ * TRACKER app holding it (a strap only pairs with ONE app at a time), followed by Bluetooth being
  * off or the runtime permission not granted. This card detects each blocker and gives a one-tap
- * fix, including deep-linking straight to the WHOOP app's info screen so the user can Force stop it.
+ * fix, including deep-linking straight to the TRACKER app's info screen so the user can Force stop it.
  *
  * Shown on the Live screen whenever the strap isn't bonded yet; it disappears once connected.
  */
@@ -50,7 +50,7 @@ fun ConnectionHelp(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     val permGranted = perms.all {
         ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
     }
-    val whoopInstalled = remember { packageInstalled(context, WHOOP_PACKAGE) }
+    val trackerInstalled = remember { packageInstalled(context, TRACKER_PACKAGE) }
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -62,7 +62,7 @@ fun ConnectionHelp(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     // A 5/MG strap is a different situation: it DID connect (battery reads), so the generic
     // "is it on / is the fitness tracker app holding it" checklist is misleading. Tell the user the honest
     // truth instead — the strap and their setup are fine; the live-data handshake just isn't ready.
-    if (live.whoop5Detected) {
+    if (live.tracker5Detected) {
         WarbFitCard(modifier = modifier) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Fitness tracker 5 / MG (experimental)", style = WarbFitType.headline, color = Palette.textPrimary)
@@ -84,13 +84,13 @@ fun ConnectionHelp(viewModel: AppViewModel, modifier: Modifier = Modifier) {
             Text("Won't connect? Run through these", style = WarbFitType.headline, color = Palette.textPrimary)
 
             HelpStep(
-                done = !whoopInstalled,
+                done = !trackerInstalled,
                 title = "Close the official fitness tracker app",
                 body = "Your strap only pairs with ONE app at a time. If the fitness tracker app is connected, " +
                     "WarbFit can't reach the strap. Force stop it (swiping it out of recents isn't enough).",
-                actionLabel = if (whoopInstalled) "Open fitness tracker app, then Force stop" else "Fitness tracker app isn't installed",
-                enabled = whoopInstalled,
-                onAction = { openAppInfo(context, WHOOP_PACKAGE) },
+                actionLabel = if (trackerInstalled) "Open fitness tracker app, then Force stop" else "Fitness tracker app isn't installed",
+                enabled = trackerInstalled,
+                onAction = { openAppInfo(context, TRACKER_PACKAGE) },
             )
             HelpStep(
                 done = btOn,
@@ -153,9 +153,9 @@ private fun HelpStep(
     }
 }
 
-private const val WHOOP_PACKAGE = "com.whoop.android"
+private const val TRACKER_PACKAGE = "com.tracker.android"
 
-/** True if [pkg] is installed (used to detect the official WHOOP app). */
+/** True if [pkg] is installed (used to detect the official TRACKER app). */
 private fun packageInstalled(ctx: Context, pkg: String): Boolean =
     try { ctx.packageManager.getPackageInfo(pkg, 0); true } catch (e: Exception) { false }
 

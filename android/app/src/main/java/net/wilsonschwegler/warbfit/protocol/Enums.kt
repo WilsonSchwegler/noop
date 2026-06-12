@@ -1,16 +1,16 @@
 package net.wilsonschwegler.warbfit.protocol
 
 /**
- * On-wire enums for the WHOOP protocol. Each constant carries its raw (on-wire) Int value and
+ * On-wire enums for the TRACKER protocol. Each constant carries its raw (on-wire) Int value and
  * every enum offers a `fromRaw(Int)` companion lookup that returns null for unknown codes.
  *
- * Values mirror the canonical schema (whoop_protocol.json) and the project SHARED CONTRACT.
+ * Values mirror the canonical schema (tracker_protocol.json) and the project SHARED CONTRACT.
  * These are deliberately a curated subset of the full device enum tables — only the codes the
  * offline companion app reads or sends. Unknown codes are surfaced by name elsewhere (see
  * [Framing.enumLabel]); they are not added here so the enums stay small and intentional.
  */
 
-/** Frame packet type (envelope byte at offset 4 for Whoop 4.0). */
+/** Frame packet type (envelope byte at offset 4 for Tracker 4.0). */
 enum class PacketType(val rawValue: Int) {
     COMMAND(35),
     COMMAND_RESPONSE(36),
@@ -77,7 +77,7 @@ enum class CommandNumber(val rawValue: Int) {
     SEND_HISTORICAL_DATA(22),
     // The historical-offload trim/ack command. Sent (with response) to confirm one HISTORY_END
     // chunk so the strap may trim it; payload = [0x01] + the verbatim 8-byte HISTORY_END end_data.
-    // Port of Swift `WhoopCommand.historicalDataResult` (whoop_protocol.json: 23 HISTORICAL_DATA_RESULT).
+    // Port of Swift `TrackerCommand.historicalDataResult` (tracker_protocol.json: 23 HISTORICAL_DATA_RESULT).
     HISTORICAL_DATA_RESULT(23),
     GET_BATTERY_LEVEL(26),
     GET_DATA_RANGE(34),

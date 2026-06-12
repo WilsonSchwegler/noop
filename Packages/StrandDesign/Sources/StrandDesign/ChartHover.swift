@@ -16,7 +16,7 @@ import SwiftUI
 /// Renders a bold primary value line and a secondary label/date line.
 public struct ChartTooltip: View {
 
-    /// The bold value line (e.g. "62 ms", "Recovery 88").
+    /// The bold value line (e.g. "62 ms", "Readiness 88").
     public var value: String
     /// The secondary context line (e.g. a formatted date, stage clock, index).
     public var label: String?
@@ -212,9 +212,9 @@ struct PositionedTooltip: View {
 #if DEBUG
 #Preview("ChartTooltip") {
     VStack(spacing: 24) {
-        ChartTooltip(value: "Recovery 88", label: "Tue 3 Jun", accent: StrandPalette.recoveryColor(88))
+        ChartTooltip(value: "Readiness 88", label: "Tue 3 Jun", accent: StrandPalette.recoveryColor(88))
         ChartTooltip(value: "62 ms", label: "HRV · sample 14")
-        ChartTooltip(value: "18.7", label: "STRAIN · all-out", accent: StrandPalette.strainColor(18.7))
+        ChartTooltip(value: "18.7", label: "EXERTION · all-out", accent: StrandPalette.strainColor(18.7))
     }
     .padding(40)
     .frame(width: 320, height: 240)

@@ -45,7 +45,7 @@ import kotlin.math.sqrt
 
 // MARK: - Stress Monitor (ported from Strand/Screens/StressView.swift)
 //
-// A Whoop-style "Stress Monitor": one 0–3 number, a band (LOW/MEDIUM/HIGH), and a
+// A Tracker-style "Stress Monitor": one 0–3 number, a band (LOW/MEDIUM/HIGH), and a
 // single plain-English line on *why*. The score is a transparent proxy for autonomic
 // load, DERIVED from how today's resting HR / HRV sit against a personal 30-day
 // baseline (a stored "stress" series, if present, takes priority):
@@ -60,7 +60,7 @@ import kotlin.math.sqrt
 // "How this is computed" card at the bottom.
 //
 // Source priority for today's value:
-//   1. A persisted daily `stress` value from the metricSeries store ("my-whoop").
+//   1. A persisted daily `stress` value from the metricSeries store ("my-tracker").
 //   2. Otherwise the z-score derivation above.
 // Both the hero number and the full trend line share ONE baseline so the line is
 // internally comparable.
@@ -76,7 +76,7 @@ fun StressScreen(vm: AppViewModel) {
     var storedLoaded by remember { mutableStateOf(false) }
     androidx.compose.runtime.LaunchedEffect(Unit) {
         val rows = runCatching {
-            vm.repo.metricSeries("my-whoop", "stress", "0000-01-01", "9999-12-31")
+            vm.repo.metricSeries("my-tracker", "stress", "0000-01-01", "9999-12-31")
         }.getOrDefault(emptyList())
         stored = rows.associate { it.day to it.value.coerceIn(0.0, 3.0) }
         storedLoaded = true

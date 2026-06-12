@@ -38,7 +38,7 @@ public struct YearHeatStrip: View {
         spacing: CGFloat = 3,
         showsMonthLabels: Bool = true,
         showsHover: Bool = true,
-        valueFormat: @escaping (Double) -> String = { "Recovery \(Int($0.rounded()))" }
+        valueFormat: @escaping (Double) -> String = { "Readiness \(Int($0.rounded()))" }
     ) {
         self.days = days.sorted { $0.date < $1.date }
         self.cellSize = cellSize
@@ -240,7 +240,7 @@ public struct YearHeatStrip: View {
                 .fill(StrandPalette.recoveryColor(score))
                 .frame(width: cellSize, height: cellSize)
                 .opacity(isHovered ? 1.0 : (hoverCell == nil ? 1.0 : 0.78))
-                .help("\(DateFormatterCache.day.string(from: day.date)) · recovery \(Int(score.rounded()))")
+                .help("\(DateFormatterCache.day.string(from: day.date)) · readiness \(Int(score.rounded()))")
         } else if day != nil {
             shape
                 .fill(StrandPalette.surfaceInset)
@@ -279,8 +279,8 @@ private func sampleYear() -> [RecoveryDay] {
 
 #Preview("YearHeatStrip") {
     VStack(alignment: .leading, spacing: 12) {
-        Text("Recovery — past year").strandOverline()
-        Text("Hover a cell: ring + date, score and recovery-state tooltip.")
+        Text("Readiness — past year").strandOverline()
+        Text("Hover a cell: ring + date, score and readiness-state tooltip.")
             .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
         YearHeatStrip(days: sampleYear())
     }

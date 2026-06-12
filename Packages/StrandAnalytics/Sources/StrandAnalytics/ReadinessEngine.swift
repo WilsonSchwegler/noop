@@ -1,5 +1,5 @@
 import Foundation
-import WhoopStore
+import TrackerStore
 
 /// On-device "Readiness" intelligence.
 ///

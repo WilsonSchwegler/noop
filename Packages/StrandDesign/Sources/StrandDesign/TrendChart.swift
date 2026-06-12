@@ -221,9 +221,9 @@ private func sampleTrend(days: Int, base: Double, swing: Double) -> [TrendPoint]
     }
 }
 
-#Preview("TrendChart — recovery") {
+#Preview("TrendChart — readiness") {
     VStack(alignment: .leading, spacing: 12) {
-        Text("Recovery — 30 days").strandOverline()
+        Text("Readiness — 30 days").strandOverline()
         Text("Hover the line: crosshair + dot + date/value tooltip.")
             .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
         TrendChart(points: sampleTrend(days: 30, base: 62, swing: 22))

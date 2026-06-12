@@ -170,7 +170,7 @@ fun SettingsScreen(vm: AppViewModel) {
     // is a manual re-open and writes nothing.
     var showWhatsNew by remember { mutableStateOf(false) }
 
-    // EXPERIMENTAL WHOOP 5/MG protocol probes (off by default). Mirrors the macOS @AppStorage toggle;
+    // EXPERIMENTAL TRACKER 5/MG protocol probes (off by default). Mirrors the macOS @AppStorage toggle;
     // SharedPreferences isn't reactive, so the Switch drives a local mutableState that the store reads.
     val puffinExperiment = remember { PuffinExperiment.from(context) }
     var puffinExperiments by remember { mutableStateOf(puffinExperiment.isEnabled) }

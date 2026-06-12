@@ -38,7 +38,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import net.wilsonschwegler.warbfit.ble.WhoopModel
+import net.wilsonschwegler.warbfit.ble.TrackerModel
 
 /**
  * Live — the real-time strap view + hardware-test surface. A big smoothed HR number,
@@ -137,7 +137,7 @@ fun LiveScreen(viewModel: AppViewModel) {
             ) {
                 Text("Strap", style = WarbFitType.footnote, color = Palette.textSecondary)
                 SegmentedPillControl(
-                    items = WhoopModel.entries.toList(),
+                    items = TrackerModel.entries.toList(),
                     selection = selectedModel,
                     label = { it.displayName },
                     onSelect = { viewModel.setSelectedModel(it) },

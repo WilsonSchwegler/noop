@@ -1,12 +1,12 @@
 package net.wilsonschwegler.warbfit.protocol
 
 /**
- * Frame checksums for the WHOOP wire protocol.
+ * Frame checksums for the TRACKER wire protocol.
  *
  * Ported verbatim from the hardware-verified Swift reference (Framing.swift):
- *  - [crc8]: CRC-8 (poly 0x07), table-driven — guards the Whoop 4.0 frame length header.
+ *  - [crc8]: CRC-8 (poly 0x07), table-driven — guards the Tracker 4.0 frame length header.
  *  - [crc32]: standard zlib CRC-32 (reflected, poly 0xEDB88320) — guards the frame payload.
- *  - [crc16Modbus]: CRC16-Modbus (poly 0xA001, init 0xFFFF, reflected) — Whoop 5.0 header check.
+ *  - [crc16Modbus]: CRC16-Modbus (poly 0xA001, init 0xFFFF, reflected) — Tracker 5.0 header check.
  *
  * All inputs are treated as raw unsigned bytes. Results are returned widened to `Int`/`Long`
  * (Kotlin has no unsigned return types in common use) but always carry only the low 8/16/32 bits.
@@ -64,7 +64,7 @@ object Crc {
     }
 
     /**
-     * CRC16-Modbus (poly 0xA001, init 0xFFFF, reflected). Used for the Whoop 5.0 frame header
+     * CRC16-Modbus (poly 0xA001, init 0xFFFF, reflected). Used for the Tracker 5.0 frame header
      * check. Ported verbatim from the Goose reverse-engineering (`crc16Modbus`). Returns 0..0xFFFF.
      */
     fun crc16Modbus(data: ByteArray): Int {

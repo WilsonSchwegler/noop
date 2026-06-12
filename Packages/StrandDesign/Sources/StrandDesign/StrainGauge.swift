@@ -2,7 +2,7 @@ import SwiftUI
 
 // MARK: - Strain Gauge (§9.1 strain ramp)
 //
-// Ember → magenta gauge for the 0–21 Whoop strain scale. Same open-gauge
+// Ember → magenta gauge for the 0–21 Tracker strain scale. Same open-gauge
 // instrument language as the Recovery Ring, but warm (output / heat) instead of
 // the cool recovery scale. Filled to strain/21 of a 240° arc, with a soft bloom
 // and a leading bead at the tip.
@@ -28,7 +28,7 @@ public struct StrainGauge: View {
         lineWidth: CGFloat = 14,
         showsLabel: Bool = true,
         showsHover: Bool = true,
-        valueFormat: @escaping (Double) -> String = { String(format: "Strain %.1f", $0) }
+        valueFormat: @escaping (Double) -> String = { String(format: "Exertion %.1f", $0) }
     ) {
         self.strain = strain
         self.supporting = supporting
@@ -194,7 +194,7 @@ public struct StrainGauge: View {
             StrainGauge(strain: 11.5, supporting: "moderate load", diameter: 190)
             StrainGauge(strain: 18.7, supporting: "all-out effort", diameter: 190)
         }
-        Text("Hover a gauge for a strain + load-word tooltip.")
+        Text("Hover a gauge for an exertion + load-word tooltip.")
             .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
     }
     .padding(40)

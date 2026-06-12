@@ -1,6 +1,6 @@
 import Foundation
-import WhoopProtocol
-import WhoopStore
+import TrackerProtocol
+import TrackerStore
 
 protocol IOSStoreWriting: AnyObject {
     @discardableResult
@@ -10,7 +10,7 @@ protocol IOSStoreWriting: AnyObject {
     func enqueueRawBatch(_ meta: RawBatchMeta, frames: [[UInt8]]) async throws
 }
 
-extension WhoopStore: IOSStoreWriting {}
+extension TrackerStore: IOSStoreWriting {}
 
 struct IOSCollectorPolicy {
     var maxFrames: Int
@@ -23,7 +23,7 @@ struct IOSCollectorPolicy {
 @MainActor
 final class IOSCollector {
     private let store: IOSStoreWriting
-    private let concreteStore: WhoopStore?
+    private let concreteStore: TrackerStore?
     private let deviceId: String
     private let policy: IOSCollectorPolicy
     private let enableRawCapture: Bool
@@ -48,7 +48,7 @@ final class IOSCollector {
          monotonic: @escaping () -> TimeInterval = { Date().timeIntervalSinceReferenceDate },
          onStoreFlush: @escaping () -> Void = {}) {
         self.store = store
-        self.concreteStore = store as? WhoopStore
+        self.concreteStore = store as? TrackerStore
         self.deviceId = deviceId
         self.policy = policy
         self.enableRawCapture = enableRawCapture

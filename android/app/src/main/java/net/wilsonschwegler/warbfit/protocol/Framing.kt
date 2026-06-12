@@ -4,7 +4,7 @@ package net.wilsonschwegler.warbfit.protocol
  * Frame envelope handling: reassembly of BLE fragments, validation, decode, and command building.
  *
  * Ported from the hardware-verified Swift reference (Framing.swift / Interpreter.swift /
- * PostHooks.swift). The Whoop 4.0 envelope is:
+ * PostHooks.swift). The Tracker 4.0 envelope is:
  *
  *   [0]      SOF 0xAA
  *   [1..2]   length u16 LE
@@ -15,9 +15,9 @@ package net.wilsonschwegler.warbfit.protocol
  *   [7..]    payload
  *   [len..]  CRC32 (zlib, LE) over frame[4..<length], 4 bytes;  total frame = length + 4
  *
- * The Whoop 5.0 ("puffin") envelope differs (CRC16-Modbus header, inner record at offset 8); it is
+ * The Tracker 5.0 ("puffin") envelope differs (CRC16-Modbus header, inner record at offset 8); it is
  * validated/decoded here for completeness, with biometric field offsets deferred (the inner record
- * is exposed but HR/RR/battery decoding for WHOOP5 is a later milestone, matching the Swift port).
+ * is exposed but HR/RR/battery decoding for TRACKER5 is a later milestone, matching the Swift port).
  */
 
 // MARK: - little-endian readers (null when out of range; mirror interpreter._read)
@@ -83,10 +83,10 @@ object Framing {
     // MARK: - validation
 
     /**
-     * Validate a complete Whoop 4.0 frame envelope and both CRCs.
+     * Validate a complete Tracker 4.0 frame envelope and both CRCs.
      * Frame: [0xAA][len u16 LE][crc8(len)][...inner...][crc32 u32 LE], total = len + 4.
      */
-    private fun verifyWhoop4(frame: ByteArray): FrameCheck {
+    private fun verifyTracker4(frame: ByteArray): FrameCheck {
         if (frame.size < 8 || frame[0] != 0xAA.toByte()) return FrameCheck(ok = false)
         val length = (frame[1].toInt() and 0xFF) or ((frame[2].toInt() and 0xFF) shl 8)
         val headerOk = Crc.crc8(byteArrayOf(frame[1], frame[2])) == (frame[3].toInt() and 0xFF)
@@ -102,12 +102,12 @@ object Framing {
     }
 
     /*
-     * Validate a Whoop 5.0 frame:
+     * Validate a Tracker 5.0 frame:
      *   [0] 0xAA [1] format [2..3] declaredLength u16 LE [4..5] header
      *   [6..7] CRC16-Modbus over frame[0..<6] LE  [8..] payload   tail CRC32 LE over payload
      *   total = declaredLength + 8 (declaredLength counts payload + the 4-byte CRC32 trailer).
      */
-    private fun verifyWhoop5(frame: ByteArray): FrameCheck {
+    private fun verifyTracker5(frame: ByteArray): FrameCheck {
         if (frame.size < 12 || frame[0] != 0xAA.toByte()) return FrameCheck(ok = false)
         val declaredLength = (frame[2].toInt() and 0xFF) or ((frame[3].toInt() and 0xFF) shl 8)
         if (declaredLength < 4) return FrameCheck(ok = false, length = declaredLength)
@@ -130,7 +130,7 @@ object Framing {
 
     // MARK: - type / enum naming
 
-    /** Canonical packet-type name, aliasing the Whoop 5.0 "puffin" types onto their base names. */
+    /** Canonical packet-type name, aliasing the Tracker 5.0 "puffin" types onto their base names. */
     private fun typeName(t: Int): String = when (t) {
         PuffinPacketType.PUFFIN_COMMAND_RESPONSE -> "COMMAND_RESPONSE"
         PuffinPacketType.PUFFIN_METADATA -> "METADATA"
@@ -155,16 +155,16 @@ object Framing {
      * Decode a complete frame for the given [family]. Returns [ParsedFrame] with `ok`/`crcOk`,
      * the canonical `typeName`, and a flat `parsed` map of decoded fields.
      */
-    fun parseFrame(frame: ByteArray, family: DeviceFamily = DeviceFamily.WHOOP4): ParsedFrame =
+    fun parseFrame(frame: ByteArray, family: DeviceFamily = DeviceFamily.TRACKER4): ParsedFrame =
         when (family) {
-            DeviceFamily.WHOOP4 -> parseWhoop4(frame)
-            DeviceFamily.WHOOP5 -> parseWhoop5(frame)
+            DeviceFamily.TRACKER4 -> parseTracker4(frame)
+            DeviceFamily.TRACKER5 -> parseTracker5(frame)
         }
 
-    private fun parseWhoop4(frame: ByteArray): ParsedFrame {
+    private fun parseTracker4(frame: ByteArray): ParsedFrame {
         if (frame.size < 8 || frame[0] != 0xAA.toByte()) return ParsedFrame.invalid()
 
-        val check = verifyWhoop4(frame)
+        val check = verifyTracker4(frame)
         val length = check.length
         val crcOk = check.crc32Ok
 
@@ -183,19 +183,19 @@ object Framing {
         return ParsedFrame(ok = true, crcOk = crcOk, typeName = name, parsed = parsed)
     }
 
-    private fun parseWhoop5(frame: ByteArray): ParsedFrame {
-        // Minimum whoop5 frame: 8 header bytes + 1 inner (type) + 4 CRC32 trailer.
+    private fun parseTracker5(frame: ByteArray): ParsedFrame {
+        // Minimum tracker5 frame: 8 header bytes + 1 inner (type) + 4 CRC32 trailer.
         if (frame.size < 12 || frame[0] != 0xAA.toByte()) return ParsedFrame.invalid()
-        val check = verifyWhoop5(frame)
+        val check = verifyTracker5(frame)
         val innerStart = 8
         val t = frame[innerStart].toInt() and 0xFF
         val name = typeName(t)
-        // Whoop 5.0 biometric field offsets are a later milestone — expose the inner record without
+        // Tracker 5.0 biometric field offsets are a later milestone — expose the inner record without
         // inventing offsets (matches the Swift port). `parsed` stays empty for now.
         return ParsedFrame(ok = true, crcOk = check.crc32Ok, typeName = name, parsed = emptyMap())
     }
 
-    // MARK: - per-type decoders (Whoop 4.0). Ported from PostHooks.swift + the static field specs.
+    // MARK: - per-type decoders (Tracker 4.0). Ported from PostHooks.swift + the static field specs.
 
     /** REALTIME_DATA (type 40): timestamp@6 (u32), heart_rate@12 (u8), rr_count@13, rr@14.. (u16). */
     private fun decodeRealtime(frame: ByteArray, parsed: MutableMap<String, Any?>) {
@@ -324,13 +324,13 @@ object Framing {
     }
 
     /**
-     * EXPERIMENTAL: build a WHOOP 5.0/MG ("puffin") command frame in the CRC16 envelope.
+     * EXPERIMENTAL: build a TRACKER 5.0/MG ("puffin") command frame in the CRC16 envelope.
      *
-     * Direct port of the Swift `puffinCommandFrame` (WhoopProtocol/Framing.swift). The inner record
+     * Direct port of the Swift `puffinCommandFrame` (TrackerProtocol/Framing.swift). The inner record
      * is `[type][seq][cmd] + payload`; `declLen = inner.size + 4` (the CRC32 tail); the CRC16-Modbus
      * covers the first six header bytes. `type` defaults to 35 (COMMAND) and `header` to `[0x00,
      * 0x01]`, mirroring the structure of the only puffin frame we know a real strap accepts (the
-     * static CLIENT_HELLO). The returned frame round-trips through `parseFrame(frame, WHOOP5)`.
+     * static CLIENT_HELLO). The returned frame round-trips through `parseFrame(frame, TRACKER5)`.
      *
      * Layout (LE = little-endian):
      *   inner  = [type][seq][cmd] + payload

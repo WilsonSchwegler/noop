@@ -44,7 +44,7 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
- * Sleep — Whoop-sleep clarity on the locked WarbFit component system. Mirrors the macOS
+ * Sleep — Tracker-sleep clarity on the locked WarbFit component system. Mirrors the macOS
  * SleepView (Strand/Screens/SleepView.swift) section-for-section:
  *
  *   1. HERO "Last night" — the stage breakdown. A Hypnogram when stage minutes are
@@ -71,16 +71,16 @@ fun SleepScreen(vm: AppViewModel) {
     val days by vm.recentDays.collectAsStateWithLifecycle()
 
     // The latest sleep session (for onset/wake clock + stored efficiency). Loaded once
-    // from the repo; the my-whoop daily metrics drive everything else and arrive via the
+    // from the repo; the my-tracker daily metrics drive everything else and arrive via the
     // shared recentDays flow.
     var session by remember { mutableStateOf<SleepSession?>(null) }
     LaunchedEffect(Unit) {
         val now = System.currentTimeMillis() / 1000L
         val from = now - 60L * 24L * 60L * 60L // 60-day lookback
         session = runCatching {
-            // Merged: imported WHOOP sessions win per night; on-device computed
-            // ("my-whoop-warbfit") sessions gap-fill so strap-only nights still show a clock.
-            vm.repo.sleepSessionsMerged("my-whoop", from, now).maxByOrNull { it.startTs }
+            // Merged: imported TRACKER sessions win per night; on-device computed
+            // ("my-tracker-warbfit") sessions gap-fill so strap-only nights still show a clock.
+            vm.repo.sleepSessionsMerged("my-tracker", from, now).maxByOrNull { it.startTs }
         }.getOrNull()
     }
 

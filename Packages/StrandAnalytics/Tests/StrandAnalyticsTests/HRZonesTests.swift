@@ -1,6 +1,6 @@
 import XCTest
 @testable import StrandAnalytics
-import WhoopProtocol
+import TrackerProtocol
 
 final class HRZonesTests: XCTestCase {
 

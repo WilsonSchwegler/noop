@@ -6,7 +6,7 @@ import androidx.room.Index
 
 /*
  * Room entities mirroring the verified GRDB schema in
- * Packages/WhoopStore/Sources/WhoopStore/Database.swift (+ MetricsCache.swift).
+ * Packages/TrackerStore/Sources/TrackerStore/Database.swift (+ MetricsCache.swift).
  *
  * Natural keys are preserved EXACTLY so insert dedupe (OnConflictStrategy.IGNORE)
  * behaves identically to the Swift `ON CONFLICT(...) DO NOTHING` upserts:
@@ -202,9 +202,9 @@ data class JournalEntry(
 )
 
 /**
- * Cached workout (Whoop + Apple Health). Swift `workout` (v8 — JournalWorkoutAppleCache.swift).
+ * Cached workout (Tracker + Apple Health). Swift `workout` (v8 — JournalWorkoutAppleCache.swift).
  * Natural key (deviceId, startTs, sport). All metric columns nullable. `source` distinguishes
- * origin ("my-whoop" / "apple-health"); `zonesJSON` is verbatim HR-zone-percentages JSON.
+ * origin ("my-tracker" / "apple-health"); `zonesJSON` is verbatim HR-zone-percentages JSON.
  * `startTs`/`endTs` are wall-clock unix SECONDS (Swift Int -> Kotlin Long).
  */
 @Entity(tableName = "workout", primaryKeys = ["deviceId", "startTs", "sport"])

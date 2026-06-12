@@ -1,6 +1,6 @@
 import XCTest
 @testable import StrandAnalytics
-import WhoopStore
+import TrackerStore
 
 final class ReadinessEngineTests: XCTestCase {
 
